@@ -113,101 +113,29 @@ const processAudioToWav = async (audioBlob: Blob, noiseSuppression: boolean, gai
 };
 
 // --- OCR Processing Logic ---
-type ProcessedItem = EsearchOCRItem & {
-    minX: number;
-    maxX: number;
-    minY: number;
-    maxY: number;
-    centerX: number;
-    centerY: number;
-    height: number;
-};
-
-const enhanceItem = (item: EsearchOCRItem): ProcessedItem => {
-    const xs = item.box.map(p => p[0]);
-    const ys = item.box.map(p => p[1]);
-    const minX = Math.min(...xs);
-    const maxX = Math.max(...xs);
-    const minY = Math.min(...ys);
-    const maxY = Math.max(...ys);
-    return { ...item, minX, maxX, minY, maxY, centerX: (minX + maxX) / 2, centerY: (minY + maxY) / 2, height: maxY - minY };
-};
-
-const groupAndSortLines = (items: ProcessedItem[]) => {
-    const lines: ProcessedItem[][] = [];
-    items.sort((a, b) => a.centerY - b.centerY);
-    items.forEach(item => {
-        const line = lines.find(l => {
-            const avgY = l.reduce((acc, i) => acc + i.centerY, 0) / l.length;
-            const avgH = l.reduce((acc, i) => acc + i.height, 0) / l.length;
-            return Math.abs(item.centerY - avgY) < (avgH * 0.6);
-        });
-        if (line) {
-            line.push(item);
-        } else {
-            lines.push([item]);
-        }
-    });
-    lines.sort((a, b) => {
-        const getLineTopY = (l: ProcessedItem[]) => Math.min(...l.map(i => i.minY));
-        return getLineTopY(a) - getLineTopY(b);
-    });
-    return lines.map(line => {
-        line.sort((a, b) => a.minX - b.minX);
-        return line.map(i => i.text).join(' ');
-    }).join('\n');
-};
-
-const detectAndSplitColumns = (rawItems: EsearchOCRItem[]): string => {
-    if (!rawItems || rawItems.length === 0) return "";
-    const items = rawItems.map(enhanceItem);
-    if (items.length < 2) return groupAndSortLines(items);
-    const minX = Math.min(...items.map(i => i.minX));
-    const maxX = Math.max(...items.map(i => i.maxX));
-    const width = maxX - minX;
-    const coverage = new Int32Array(Math.ceil(width) + 1);
-    items.forEach(item => {
-        const start = Math.floor(item.minX - minX);
-        const end = Math.ceil(item.maxX - minX);
-        for (let i = start; i < end; i++) {
-            if (i >= 0 && i < coverage.length) coverage[i]++;
-        }
-    });
-    const searchStart = Math.floor(width * 0.25);
-    const searchEnd = Math.floor(width * 0.75);
-    let maxGapSize = 0, maxGapCenter = -1, currentGapStart = -1;
-    for (let i = searchStart; i <= searchEnd; i++) {
-        if (coverage[i] === 0) {
-            if (currentGapStart === -1) currentGapStart = i;
-        } else {
-            if (currentGapStart !== -1) {
-                const gapSize = i - currentGapStart;
-                if (gapSize > maxGapSize) {
-                    maxGapSize = gapSize;
-                    maxGapCenter = currentGapStart + (gapSize / 2);
-                }
-                currentGapStart = -1;
-            }
+const processOcrResult = (result: EsearchOCROutput): string => {
+    // 1. Prefer esearch-ocr's native layout analysis columns
+    if (result.columns && result.columns.length > 0) {
+        const columnTexts = result.columns
+            .map(col => col.parragraphs.map(p => p.parse.text).filter(Boolean).join('\n'))
+            .filter(t => t.trim().length > 0);
+        if (columnTexts.length > 0) {
+            return columnTexts.join('\n\n');
         }
     }
-    const hasMultipleColumns = maxGapCenter !== -1 && maxGapSize > 10;
-    if (hasMultipleColumns) {
-        const splitX = minX + maxGapCenter;
-        const leftItems = items.filter(i => i.centerX < splitX);
-        const rightItems = items.filter(i => i.centerX >= splitX);
-        const leftText = groupAndSortLines(leftItems);
-        const rightText = groupAndSortLines(rightItems);
-        return `${leftText}\n\n${rightText}`;
-    }
-    return groupAndSortLines(items);
-};
 
-const processOcrResult = (result: EsearchOCROutput) => {
-    const rawItems = result.src;
-    if (!rawItems || rawItems.length === 0) {
-        return result.parragraphs?.map(p => p.text).join('\n') || "";
+    // 2. Next fallback: native reading-order paragraphs
+    if (result.parragraphs && result.parragraphs.length > 0) {
+        const text = result.parragraphs.map(p => p.text).filter(Boolean).join('\n');
+        if (text.trim().length > 0) return text;
     }
-    return detectAndSplitColumns(rawItems);
+
+    // 3. Fallback: raw detected items
+    if (result.src && result.src.length > 0) {
+        return result.src.map(i => i.text).filter(Boolean).join('\n');
+    }
+
+    return "";
 };
 // --- END OCR ---
 

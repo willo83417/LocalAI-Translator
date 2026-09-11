@@ -123,18 +123,42 @@ export const ASR_MODELS: AsrModel[] = [
 ];
 
 export const OCR_MODELS = {
+  PP_v6_tiny: {
+    name: "PP-OCRv6_tiny",
+    description: "settings.ocrModelDescriptions.PP_v6_tiny",
+    paths: {
+      detPath: 'https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/det/PP-OCRv6_det_tiny.onnx',
+      recPath: 'https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx',
+    },
+  },
+  PP_v6_small: {
+    name: "PP-OCRv6_small",
+    description: "settings.ocrModelDescriptions.PP_v6_small",
+    paths: {
+      detPath: 'https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/det/PP-OCRv6_det_small.onnx',
+      recPath: 'https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx',
+    },
+  },
+  PP_v6_medium: {
+    name: "PP-OCRv6_medium",
+    description: "settings.ocrModelDescriptions.PP_v6_medium",
+    paths: {
+      detPath: 'https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/det/PP-OCRv6_det_medium.onnx',
+      recPath: 'https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_medium.onnx',
+    },
+  },
   ch_v5: {
     name: "ch_PP-OCRv5_mobile",
-    description: "Chinese/English/Japanese",
+    description: "settings.ocrModelDescriptions.ch_v5",
     paths: {
       detPath: 'https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.8.0/onnx/PP-OCRv5/det/ch_PP-OCRv5_det_mobile.onnx',
       recPath: 'https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.8.0/onnx/PP-OCRv5/rec/ch_PP-OCRv5_rec_mobile.onnx',
       dictPath: 'https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.8.0/paddle/PP-OCRv5/rec/ch_PP-OCRv5_rec_mobile/ppocrv5_dict.txt',
     },
   },
-    latin_v5: {
+  latin_v5: {
     name: "latin_PP-OCRv5_mobile",
-    description: "Latin languages (French, German, Spanish, etc.)",
+    description: "settings.ocrModelDescriptions.latin_v5",
     paths: {
       detPath: 'https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.8.0/onnx/PP-OCRv5/det/ch_PP-OCRv5_det_mobile.onnx',
       recPath: 'https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.8.0/onnx/PP-OCRv5/rec/latin_PP-OCRv5_rec_mobile.onnx',
@@ -143,7 +167,7 @@ export const OCR_MODELS = {
   },
   kr_v5: {
     name: "korean_PP-OCRv5_mobile",
-    description: "Korean Only",
+    description: "settings.ocrModelDescriptions.kr_v5",
     paths: {
       detPath: 'https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.8.0/onnx/PP-OCRv5/det/ch_PP-OCRv5_det_mobile.onnx',
       recPath: 'https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.8.0/onnx/PP-OCRv5/rec/korean_PP-OCRv5_rec_mobile.onnx',

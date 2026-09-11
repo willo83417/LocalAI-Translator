@@ -70,5 +70,5 @@ export interface OcrModelConfig {
     key: string;
     detPath: string;
     recPath: string;
-    dictPath: string;
+    dictPath?: string;
 }

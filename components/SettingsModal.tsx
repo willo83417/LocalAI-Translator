@@ -931,7 +931,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                                             onChange={(e) => setSelectedOcrModel(e.target.value as any)}
                                             className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
                                         >
-                                            {Object.entries(OCR_MODELS).map(([k, m]) => <option key={k} value={k}>{m.description}</option>)}
+                                            {Object.entries(OCR_MODELS).map(([k, m]) => <option key={k} value={k}>{m.name} ({t(m.description)})</option>)}
                                         </select>
                                         <button 
                                             onClick={() => onClearOcrModel(selectedOcrModel)}

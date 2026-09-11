@@ -93,9 +93,8 @@ export const setInDB = async (key: string, value: any): Promise<void> => {
 };
 
 export const deleteOcrModelCache = async (modelKey: string): Promise<void> => {
-    // We target `rec-model-${modelKey}` and `dict-${modelKey}`
-    // (We also try to clean `det-model` if space is needed, but typically you might keep it since it's shared across v5 models)
-    const keysToDelete = [`rec-model-${modelKey}`, `dict-${modelKey}`];
+    // We target `rec-model-${modelKey}`, `dict-${modelKey}`, and `det-model-${modelKey}`
+    const keysToDelete = [`rec-model-${modelKey}`, `dict-${modelKey}`, `det-model-${modelKey}`];
     
     try {
         if (isOPFSSupported) {
