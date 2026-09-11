@@ -1,1 +1,1 @@
-if('serviceWorker' in navigator) {window.addEventListener('load', () => {navigator.serviceWorker.register('/Gemini-AI-Translator/sw.js', { scope: '/Gemini-AI-Translator/' })})}
+if('serviceWorker' in navigator) {window.addEventListener('load', () => {navigator.serviceWorker.register('/LocalAI-Translator/sw.js', { scope: '/LocalAI-Translator/' })})}
