@@ -39,6 +39,7 @@ export default defineConfig(({ mode }) => {
         chunkSizeWarningLimit: 2000, // Increase limit to 2000 kB
         rollupOptions: {
           output: {
+            
             // Optional: Uncomment to group vendor libraries into a single chunk.
             // This can improve caching for PWA updates, as vendor code changes less often.
             manualChunks(id) {
@@ -46,10 +47,11 @@ export default defineConfig(({ mode }) => {
                 return 'vendor';
               }
             }
+            
           },
         },
       },
-        plugins: [
+plugins: [
     react(),
     VitePWA({
       registerType: 'autoUpdate',
@@ -104,8 +106,8 @@ export default defineConfig(({ mode }) => {
         ]
       },
       manifest: {
-        name: "Gemini AI Translator",
-        short_name: "GeminiTranslator",
+        name: "LocalAI-Translator",
+        short_name: "LocalAI.Translator",
         description: "A sleek, modern translation application powered by Google's Gemini API. It provides fast and accurate text translations between various languages with a clean, mobile-first user interface.",
         theme_color: "#3b82f6",
         background_color: "#f1f5f9",

@@ -7,10 +7,10 @@ English | [中文](./README_zh.md) |
 
   
 
-# Gemini AI Translator
+# LocalAI-Translator
 
 This is a simple and modern translation app that supports Google Gemini and OpenAI compatible APIs; it also supports offline open-source models to prevent sensitive data leakage. It offers fast and accurate multilingual text translation with a clean, mobile-first user interface.  
-🚀[Live Demo](https://willo83417.github.io/Gemini-AI-Translator/)  
+🚀[Live Demo](https://willo83417.github.io/LocalAI-Translator/)  
 
 ## 📸 Screenshots
 
@@ -18,30 +18,30 @@ This is a simple and modern translation app that supports Google Gemini and Open
   <table>
     <tr>
       <td align="center">
-        <img src="https://github.com/willo83417/Gemini-AI-Translator/blob/gh-pages/screenshots/P1.png" width="200" alt="Screenshot 1"/>
+        <img src="https://github.com/willo83417/LocalAI-Translator/blob/gh-pages/screenshots/P1.png" width="200" alt="Screenshot 1"/>
       </td>
       <td align="center">
-        <img src="https://github.com/willo83417/Gemini-AI-Translator/blob/gh-pages/screenshots/P2.png" width="200" alt="Screenshot 2"/>
+        <img src="https://github.com/willo83417/LocalAI-Translator/blob/gh-pages/screenshots/P2.png" width="200" alt="Screenshot 2"/>
       </td>
       <td align="center">
-        <img src="https://github.com/willo83417/Gemini-AI-Translator/blob/gh-pages/screenshots/P3.png" width="200" alt="Screenshot 3"/>
+        <img src="https://github.com/willo83417/LocalAI-Translator/blob/gh-pages/screenshots/P3.png" width="200" alt="Screenshot 3"/>
       </td>
       <td align="center">
-        <img src="https://github.com/willo83417/Gemini-AI-Translator/blob/gh-pages/screenshots/P4.png" width="200" alt="Screenshot 4"/>
+        <img src="https://github.com/willo83417/LocalAI-Translator/blob/gh-pages/screenshots/P4.png" width="200" alt="Screenshot 4"/>
       </td>
     </tr>
     <tr>
       <td align="center">
-        <img src="https://github.com/willo83417/Gemini-AI-Translator/blob/gh-pages/screenshots/P5.png" width="200" alt="Screenshot 5"/>
+        <img src="https://github.com/willo83417/LocalAI-Translatorr/blob/gh-pages/screenshots/P5.png" width="200" alt="Screenshot 5"/>
       </td>
       <td align="center">
-        <img src="https://github.com/willo83417/Gemini-AI-Translator/blob/gh-pages/screenshots/P6.png" width="200" alt="Screenshot 6"/>
+        <img src="https://github.com/willo83417/LocalAI-Translator/blob/gh-pages/screenshots/P6.png" width="200" alt="Screenshot 6"/>
       </td>
       <td align="center">
-        <img src="https://github.com/willo83417/Gemini-AI-Translator/blob/gh-pages/screenshots/P7.png" width="200" alt="Screenshot 7"/>
+        <img src="https://github.com/willo83417/LocalAI-Translator/blob/gh-pages/screenshots/P7.png" width="200" alt="Screenshot 7"/>
       </td>
       <td align="center">
-        <img src="https://github.com/willo83417/Gemini-AI-Translator/blob/gh-pages/screenshots/P8.png" width="200" alt="Screenshot 8"/>
+        <img src="https://github.com/willo83417/LocalAI-Translator/blob/gh-pages/screenshots/P8.png" width="200" alt="Screenshot 8"/>
       </td>
     </tr>
   </table>

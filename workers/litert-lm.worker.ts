@@ -14,6 +14,11 @@ const createConversationWithOptions = async (eng: Engine, opts: any) => {
     if (randomSeed !== undefined) samplerParams.seed = randomSeed;
 
     const conversationConfig: any = {
+        preface: {
+            extra_context: {
+            enable_thinking: false, // Set to false to disable thinking
+            }
+        },
         sessionConfig: {
             maxOutputTokens: maxTokens,
         }
@@ -42,7 +47,7 @@ const handleInit = async (payload: any) => {
             throw new Error('WebGPU is not supported.');
         }
 
-        const CDN_URL = 'https://cdn.jsdelivr.net/npm/@litert-lm/core@0.15.0/wasm';
+        const CDN_URL = 'https://cdn.jsdelivr.net/npm/@litert-lm/core@0.17.0/wasm';
         const LOCAL_URL = '/assets/wasm';
 
         try {

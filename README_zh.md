@@ -20,10 +20,10 @@ View your app in AI Studio: https://ai.studio/apps/drive/1uA68LGio1CJePNXz2emCco
 3. 執行Chrome 或是 Edge 網址列輸入 `chrome://flags/`, 搜尋 `Insecure origins treated as secure` 輸入本地伺服器 IP 以繞過安全檢查並使用 WebGPU  
 範例: http://192.168.31.92:3000,192.168.31.92:3000,http://localhost:3000  
 
-# Gemini AI Translator
+# LocalAI-Translator
 
 這是一個簡潔且現代的翻譯應用程式，支援 Google Gemini 與 OpenAI 相容 API；同時也支援離線開源模型以防止敏感資料外洩。它提供了一個乾淨、行動裝置優先的使用者介面，可在多種語言之間進行快速準確的文字翻譯。  
-🚀[Live Demo](https://willo83417.github.io/Gemini-AI-Translator-offline/ "Gemini AI Translator")
+🚀[Live Demo](https://willo83417.github.io/LocalAI-Translator/ "LocalAI-Translator")
 
 ## 📸 截圖  
 
@@ -32,30 +32,30 @@ View your app in AI Studio: https://ai.studio/apps/drive/1uA68LGio1CJePNXz2emCco
   <table>
     <tr>
       <td align="center">
-        <img src="https://github.com/willo83417/Gemini-AI-Translator/blob/gh-pages/screenshots/P1.png" width="200" alt="Screenshot 1"/>
+        <img src="https://github.com/willo83417/LocalAI-Translator/blob/gh-pages/screenshots/P1.png" width="200" alt="Screenshot 1"/>
       </td>
       <td align="center">
-        <img src="https://github.com/willo83417/Gemini-AI-Translator/blob/gh-pages/screenshots/P2.png" width="200" alt="Screenshot 2"/>
+        <img src="https://github.com/willo83417/LocalAI-Translator/blob/gh-pages/screenshots/P2.png" width="200" alt="Screenshot 2"/>
       </td>
       <td align="center">
-        <img src="https://github.com/willo83417/Gemini-AI-Translator/blob/gh-pages/screenshots/P3.png" width="200" alt="Screenshot 3"/>
+        <img src="https://github.com/willo83417/LocalAI-Translator/blob/gh-pages/screenshots/P3.png" width="200" alt="Screenshot 3"/>
       </td>
       <td align="center">
-        <img src="https://github.com/willo83417/Gemini-AI-Translator/blob/gh-pages/screenshots/P4.png" width="200" alt="Screenshot 4"/>
+        <img src="https://github.com/willo83417/LocalAI-Translator/blob/gh-pages/screenshots/P4.png" width="200" alt="Screenshot 4"/>
       </td>
     </tr>
     <tr>
       <td align="center">
-        <img src="https://github.com/willo83417/Gemini-AI-Translator/blob/gh-pages/screenshots/P5.png" width="200" alt="Screenshot 5"/>
+        <img src="https://github.com/willo83417/LocalAI-Translator/blob/gh-pages/screenshots/P5.png" width="200" alt="Screenshot 5"/>
       </td>
       <td align="center">
-        <img src="https://github.com/willo83417/Gemini-AI-Translator/blob/gh-pages/screenshots/P6.png" width="200" alt="Screenshot 6"/>
+        <img src="https://github.com/willo83417/LocalAI-Translator/blob/gh-pages/screenshots/P6.png" width="200" alt="Screenshot 6"/>
       </td>
       <td align="center">
-        <img src="https://github.com/willo83417/Gemini-AI-Translator/blob/gh-pages/screenshots/P7.png" width="200" alt="Screenshot 7"/>
+        <img src="https://github.com/willo83417/LocalAI-Translator/blob/gh-pages/screenshots/P7.png" width="200" alt="Screenshot 7"/>
       </td>
       <td align="center">
-        <img src="https://github.com/willo83417/Gemini-AI-Translator/blob/gh-pages/screenshots/P8.png" width="200" alt="Screenshot 8"/>
+        <img src="https://github.com/willo83417/LocalAI-Translator/blob/gh-pages/screenshots/P8.png" width="200" alt="Screenshot 8"/>
       </td>
     </tr>
   </table>

@@ -1,6 +1,6 @@
 {
-  "name": "Gemini AI Translator_offline",
-  "description": "A simple and modern translation app that supports Google Gemini and OpenAI compatible APIs; it also supports offline open-source models to prevent sensitive data leakage. It offers fast and accurate multilingual text translation with a clean, mobile-first user interface.",
+  "name": "LocalAI-Translator",
+  "description": "A sleek, modern translation application powered by Google\u0027s Gemini API. It provides fast and accurate text translations between various languages with a clean, mobile-first user interface.",
   "requestFramePermissions": [
     "microphone",
     "camera"

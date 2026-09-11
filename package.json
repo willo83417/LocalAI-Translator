@@ -14,7 +14,7 @@
     "@google/genai": "^1.48.0",
     "@huggingface/transformers": "^4.2.0",
     "@jeffpeng3/nemotron-asr-core": "^0.2.3",
-    "@litert-lm/core": "^0.15.0",
+    "@litert-lm/core": "^0.17.0",
     "@mediapipe/tasks-genai": "1.0.1-rc.20260805",
     "esearch-ocr": "^8.5.2",
     "gh-pages": "^6.3.0",
