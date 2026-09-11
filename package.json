@@ -16,7 +16,7 @@
     "@jeffpeng3/nemotron-asr-core": "^0.2.3",
     "@litert-lm/core": "^0.15.0",
     "@mediapipe/tasks-genai": "1.0.1-rc.20260805",
-    "esearch-ocr": "^8.5.0",
+    "esearch-ocr": "^8.5.2",
     "gh-pages": "^6.3.0",
     "i18next": "^23.12.2",
     "i18next-browser-languagedetector": "^8.0.0",

@@ -1,3 +1,8 @@
+// Polyfill SharedArrayBuffer if not defined in worker scope
+if (typeof (globalThis as any).SharedArrayBuffer === 'undefined') {
+    (globalThis as any).SharedArrayBuffer = ArrayBuffer;
+}
+
 import { AsrEngine } from "@jeffpeng3/nemotron-asr-core";
 
 interface WorkerMessage {

@@ -1,4 +1,10 @@
 
+// Polyfill SharedArrayBuffer if not defined in worker scope
+// to prevent esearch-ocr from crashing on `n instanceof SharedArrayBuffer`
+if (typeof (globalThis as any).SharedArrayBuffer === 'undefined') {
+    (globalThis as any).SharedArrayBuffer = ArrayBuffer;
+}
+
 import * as ocr from 'esearch-ocr';
 import * as ort from 'onnxruntime-web/webgpu';
 import { getFromDB, setInDB } from '../utils/db';
@@ -51,7 +57,6 @@ self.onmessage = async (e: MessageEvent<any>) => {
                 const ortInstance: any = (ort as any).default || ort;
                 
                 // Configure ONNX Runtime inside worker
-                // Use WebGPU if available
                 ortInstance.env.wasm.numThreads = 0;
                 ortInstance.env.wasm.simd = true;
                 ortInstance.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.29.0/dist/';
