@@ -193,8 +193,6 @@ var EXITSTATUS;
  */ var isFileURI = filename => filename.startsWith("file://");
 
 // include: runtime_common.js
-// include: runtime_stack_check.js
-// end include: runtime_stack_check.js
 // include: runtime_exceptions.js
 // Base Emscripten EH error class
 class EmscriptenEH {}
@@ -207,8 +205,17 @@ class EmscriptenSjLj extends EmscriptenEH {}
 // Memory management
 var runtimeInitialized = false;
 
+// When ALLOW_MEMORY_GROWTH is enabled, the conversion from Wasm
+// memory to ArrayBuffer requires some additional logic.
+function getMemoryBuffer() {
+  return wasmMemory.buffer;
+}
+
 function updateMemoryViews() {
-  var b = wasmMemory.buffer;
+  // If we already have a heap that is resizeable/growable buffer we don't
+  // need to do anything in updateMemoryViews.
+  if (HEAP8?.buffer?.resizable) return;
+  var b = getMemoryBuffer();
   HEAP8 = new Int8Array(b);
   HEAP16 = new Int16Array(b);
   Module["HEAPU8"] = HEAPU8 = new Uint8Array(b);
@@ -225,11 +232,10 @@ function updateMemoryViews() {
 // end include: memoryprofiler.js
 // end include: runtime_common.js
 function preRun() {
-  if (Module["preRun"]) {
-    if (typeof Module["preRun"] == "function") Module["preRun"] = [ Module["preRun"] ];
-    while (Module["preRun"].length) {
-      addOnPreRun(Module["preRun"].shift());
-    }
+  var preRun = Module["preRun"];
+  if (preRun) {
+    if (typeof preRun == "function") preRun = [ preRun ];
+    onPreRuns.push(...preRun);
   }
   // Begin ATPRERUNS hooks
   callRuntimeCallbacks(onPreRuns);
@@ -247,12 +253,10 @@ function initRuntime() {
 }
 
 function postRun() {
-  // PThreads reuse the runtime from the main thread.
-  if (Module["postRun"]) {
-    if (typeof Module["postRun"] == "function") Module["postRun"] = [ Module["postRun"] ];
-    while (Module["postRun"].length) {
-      addOnPostRun(Module["postRun"].shift());
-    }
+  var postRun = Module["postRun"];
+  if (postRun) {
+    if (typeof postRun == "function") postRun = [ postRun ];
+    onPostRuns.push(...postRun);
   }
   // Begin ATPOSTRUNS hooks
   callRuntimeCallbacks(onPostRuns);
@@ -294,9 +298,6 @@ function findWasmBinary() {
 }
 
 function getBinarySync(file) {
-  if (file == wasmBinaryFile && wasmBinary) {
-    return new Uint8Array(wasmBinary);
-  }
   if (readBinary) {
     return readBinary(file);
   }
@@ -366,7 +367,7 @@ async function createWasm() {
   // Load the wasm module and create an instance of using native support in the JS engine.
   // handle a generated wasm instance, receiving its exports and
   // performing other necessary setup
-  /** @param {WebAssembly.Module=} module*/ function receiveInstance(instance, module) {
+  function receiveInstance(instance) {
     wasmExports = instance.exports;
     wasmExports = Asyncify.instrumentWasmExports(wasmExports);
     wasmExports = applySignatureConversions(wasmExports);
@@ -389,11 +390,10 @@ async function createWasm() {
   // performing.
   // Also pthreads and wasm workers initialize the wasm instance through this
   // path.
-  if (Module["instantiateWasm"]) {
-    return new Promise((resolve, reject) => {
-      Module["instantiateWasm"](info, (inst, mod) => {
-        resolve(receiveInstance(inst, mod));
-      });
+  var instantiateWasm = Module["instantiateWasm"];
+  if (instantiateWasm) {
+    return new Promise(resolve => {
+      instantiateWasm(info, inst => resolve(receiveInstance(inst)));
     });
   }
   wasmBinaryFile ??= findWasmBinary();
@@ -468,7 +468,7 @@ var callUserCallback = func => {
 };
 
 function getFullscreenElement() {
-  return document.fullscreenElement || document.mozFullScreenElement || document.webkitFullscreenElement || document.webkitCurrentFullScreenElement || document.msFullscreenElement;
+  return document.fullscreenElement ?? document.webkitFullscreenElement;
 }
 
 /** @param {number=} timeout */ var safeSetTimeout = (func, timeout) => setTimeout(() => {
@@ -486,12 +486,15 @@ var warnOnce = text => {
 
 var preloadPlugins = [];
 
+/** @type {!Int32Array} */ var HEAP32;
+
+/** @type {!Uint32Array} */ var HEAPU32;
+
 var Browser = {
   useWebGL: false,
   isFullscreen: false,
   pointerLock: false,
   moduleContextCreatedCallbacks: [],
-  workers: [],
   preloadedImages: {},
   preloadedAudios: {},
   getCanvas: () => Module["canvas"],
@@ -558,7 +561,7 @@ var Browser = {
       var url = URL.createObjectURL(b);
       // XXX we never revoke this!
       var audio = new Audio;
-      audio.addEventListener("canplaythrough", () => finish(audio), false);
+      audio.addEventListener("canplaythrough", () => finish(audio));
       // use addEventListener due to chromium bug 124926
       audio.onerror = event => {
         if (done) return;
@@ -606,14 +609,14 @@ var Browser = {
     if (canvas) {
       // forced aspect ratio can be enabled by defining 'forcedAspectRatio' on Module
       // Module['forcedAspectRatio'] = 4 / 3;
-      document.addEventListener("pointerlockchange", pointerLockChange, false);
+      document.addEventListener("pointerlockchange", pointerLockChange);
       if (Module["elementPointerLock"]) {
         canvas.addEventListener("click", ev => {
           if (!Browser.pointerLock && Browser.getCanvas().requestPointerLock) {
             Browser.getCanvas().requestPointerLock();
             ev.preventDefault();
           }
-        }, false);
+        });
       }
     }
   },
@@ -687,32 +690,30 @@ var Browser = {
           Browser.updateCanvasDimensions(canvas);
         }
       }
-      Module["onFullScreen"]?.(Browser.isFullscreen);
-      Module["onFullscreen"]?.(Browser.isFullscreen);
     }
     if (!Browser.fullscreenHandlersInstalled) {
       Browser.fullscreenHandlersInstalled = true;
-      document.addEventListener("fullscreenchange", fullscreenChange, false);
-      document.addEventListener("mozfullscreenchange", fullscreenChange, false);
-      document.addEventListener("webkitfullscreenchange", fullscreenChange, false);
-      document.addEventListener("MSFullscreenChange", fullscreenChange, false);
+      document.addEventListener("fullscreenchange", fullscreenChange);
+      document.addEventListener("webkitfullscreenchange", fullscreenChange);
     }
     // create a new parent to ensure the canvas has no siblings. this allows browsers to optimize full screen performance when its parent is the full screen root
     var canvasContainer = document.createElement("div");
     canvas.parentNode.insertBefore(canvasContainer, canvas);
     canvasContainer.appendChild(canvas);
     // use parent of canvas as full screen root to allow aspect ratio correction (Firefox stretches the root to screen size)
-    canvasContainer.requestFullscreen = canvasContainer["requestFullscreen"] || canvasContainer["mozRequestFullScreen"] || canvasContainer["msRequestFullscreen"] || (canvasContainer["webkitRequestFullscreen"] ? () => canvasContainer["webkitRequestFullscreen"](Element["ALLOW_KEYBOARD_INPUT"]) : null) || (canvasContainer["webkitRequestFullScreen"] ? () => canvasContainer["webkitRequestFullScreen"](Element["ALLOW_KEYBOARD_INPUT"]) : null);
+    // Safari didn't support Element.requestFullscreen until 16.4
+    // See: https://developer.mozilla.org/en-US/docs/Web/API/Element/requestFullscreen
+    /** @suppress {checkTypes} */ canvasContainer.requestFullscreen ??= (canvasContainer["webkitRequestFullscreen"] ? () => canvasContainer["webkitRequestFullscreen"](Element.ALLOW_KEYBOARD_INPUT) : null) ?? (canvasContainer["webkitRequestFullScreen"] ? () => canvasContainer["webkitRequestFullScreen"](Element.ALLOW_KEYBOARD_INPUT) : null);
     canvasContainer.requestFullscreen();
   },
   exitFullscreen() {
     // This is workaround for chrome. Trying to exit from fullscreen
-    // not in fullscreen state will cause "TypeError: Document not active"
+    // not in fullscreen state will cause 'TypeError: Document not active'
     // in chrome. See https://github.com/emscripten-core/emscripten/pull/8236
     if (!Browser.isFullscreen) {
       return false;
     }
-    var CFS = document["exitFullscreen"] || document["cancelFullScreen"] || document["mozCancelFullScreen"] || document["msExitFullscreen"] || document["webkitCancelFullScreen"] || (() => {});
+    var CFS = document.exitFullscreen ?? document["webkitCancelFullScreen"];
     CFS.apply(document, []);
     return true;
   },
@@ -734,14 +735,7 @@ var Browser = {
     }[name.slice(name.lastIndexOf(".") + 1)];
   },
   getUserMedia(func) {
-    window.getUserMedia ||= navigator["getUserMedia"] || navigator["mozGetUserMedia"];
-    window.getUserMedia(func);
-  },
-  getMovementX(event) {
-    return event["movementX"] || event["mozMovementX"] || event["webkitMovementX"] || 0;
-  },
-  getMovementY(event) {
-    return event["movementY"] || event["mozMovementY"] || event["webkitMovementY"] || 0;
+    return navigator.mediaDevices.getUserMedia(func);
   },
   getMouseWheelDelta(event) {
     var delta = 0;
@@ -819,13 +813,8 @@ var Browser = {
     if (Browser.pointerLock) {
       // When the pointer is locked, calculate the coordinates
       // based on the movement of the mouse.
-      // Workaround for Firefox bug 764498
-      if (event.type != "mousemove" && ("mozMovementX" in event)) {
-        Browser.mouseMovementX = Browser.mouseMovementY = 0;
-      } else {
-        Browser.mouseMovementX = Browser.getMovementX(event);
-        Browser.mouseMovementY = Browser.getMovementY(event);
-      }
+      Browser.mouseMovementX = event.movementX;
+      Browser.mouseMovementY = event.movementY;
       // add the mouse delta to the current absolute mouse position
       Browser.mouseX += Browser.mouseMovementX;
       Browser.mouseY += Browser.mouseMovementY;
@@ -894,13 +883,6 @@ var Browser = {
     }
     var w = wNative;
     var h = hNative;
-    if (Module["forcedAspectRatio"] > 0) {
-      if (w / h < Module["forcedAspectRatio"]) {
-        w = Math.round(h * Module["forcedAspectRatio"]);
-      } else {
-        h = Math.round(w / Module["forcedAspectRatio"]);
-      }
-    }
     if ((getFullscreenElement() === canvas.parentNode) && (typeof screen != "undefined")) {
       var factor = Math.min(screen.width / w, screen.height / h);
       w = Math.round(w * factor);
@@ -929,25 +911,7 @@ var Browser = {
   }
 };
 
-/** @type {!Int16Array} */ var HEAP16;
-
-/** @type {!Int32Array} */ var HEAP32;
-
-/** not-@type {!BigInt64Array} */ var HEAP64;
-
 /** @type {!Int8Array} */ var HEAP8;
-
-/** @type {!Float32Array} */ var HEAPF32;
-
-/** @type {!Float64Array} */ var HEAPF64;
-
-/** @type {!Uint16Array} */ var HEAPU16;
-
-/** @type {!Uint32Array} */ var HEAPU32;
-
-/** not-@type {!BigUint64Array} */ var HEAPU64;
-
-/** @type {!Uint8Array} */ var HEAPU8;
 
 var callRuntimeCallbacks = callbacks => {
   while (callbacks.length > 0) {
@@ -958,11 +922,7 @@ var callRuntimeCallbacks = callbacks => {
 
 var onPostRuns = [];
 
-var addOnPostRun = cb => onPostRuns.push(cb);
-
 var onPreRuns = [];
-
-var addOnPreRun = cb => onPreRuns.push(cb);
 
 var noExitRuntime = true;
 
@@ -1103,7 +1063,7 @@ var initRandomFill = () => {
   // This block is not needed on v19+ since crypto.getRandomValues is builtin
   if (ENVIRONMENT_IS_NODE) {
     var nodeCrypto = require("node:crypto");
-    return view => nodeCrypto.randomFillSync(view);
+    return view => (nodeCrypto.randomFillSync(view), 0);
   }
   return view => (crypto.getRandomValues(view), 0);
 };
@@ -1165,7 +1125,13 @@ var PATH_FS = {
 
 var UTF8Decoder = new TextDecoder;
 
-var findStringEnd = (heapOrArray, idx, maxBytesToRead, ignoreNul) => {
+/**
+   * heapOrArray is either a regular array, or a JavaScript typed array view.
+   * @param {number} idx
+   * @param {number=} maxBytesToRead
+   * @param {boolean=} ignoreNul
+   * @return {number}
+   */ var findStringEnd = (heapOrArray, idx, maxBytesToRead, ignoreNul) => {
   var maxIdx = idx + maxBytesToRead;
   if (ignoreNul) return maxIdx;
   // TextDecoder needs to know the byte length in advance, it doesn't stop on
@@ -1429,6 +1395,8 @@ var TTY = {
     }
   }
 };
+
+/** @type {!Uint8Array} */ var HEAPU8;
 
 var zeroMemory = (ptr, size) => HEAPU8.fill(0, ptr, ptr + size);
 
@@ -1791,23 +1759,26 @@ var FS_createDataFile = (...args) => FS.createDataFile(...args);
 
 var getUniqueRunDependency = id => id;
 
+var dependenciesPromise = null;
+
+var resolveRunDependencies = async () => dependenciesPromise;
+
 var runDependencies = 0;
 
-var dependenciesFulfilled = null;
+var dependenciesPromiseResolve = null;
 
 var removeRunDependency = id => {
   runDependencies--;
   Module["monitorRunDependencies"]?.(runDependencies);
-  if (runDependencies == 0) {
-    if (dependenciesFulfilled) {
-      var callback = dependenciesFulfilled;
-      dependenciesFulfilled = null;
-      callback();
-    }
+  if (!runDependencies) {
+    dependenciesPromiseResolve();
   }
 };
 
 var addRunDependency = id => {
+  if (!runDependencies) {
+    dependenciesPromise = new Promise(resolve => dependenciesPromiseResolve = resolve);
+  }
   runDependencies++;
   Module["monitorRunDependencies"]?.(runDependencies);
 };
@@ -1940,6 +1911,53 @@ var FS = {
     }
     get isDevice() {
       return FS.isChrdev(this.mode);
+    }
+    // The per-inode readiness wait-queue. The node carries a Set of listener
+    // entries {cb}; producers (SOCKFS, PIPEFS) call notifyListeners on a
+    // readiness transition, and poll()/epoll consume it. It lives on the node
+    // (not the fd) so dup'd fds share one queue. Only nodes that derive real
+    // readiness (sockets, pipes, and an epoll's own node) ever use this -
+    // always-ready types (regular files, ttys) never register or notify.
+    addListener(cb, exclusive = false) {
+      var entry = {
+        cb,
+        exclusive
+      };
+      var listeners = (this.listeners ??= new Set);
+      listeners.add(entry);
+      return {
+        listeners,
+        entry
+      };
+    }
+    notifyListeners(flags) {
+      // Iterates the set without copying, which is safe ONLY under a
+      // load-bearing contract that every internal listener must honour:
+      //   1. A listener must not run user code synchronously (a poll waiter only
+      //      resolves a Promise; an epoll registration only re-lists +
+      //      re-notifies; the epoll callback only schedules a tick). User code
+      //      runs on a later tick, never inside this loop.
+      //   2. A listener may delete entries only from ITS OWN waiter, never from
+      //      a sibling node's set that may be mid-iteration. (Deleting an entry
+      //      of the set being iterated here is fine - a Set tolerates removal of
+      //      a not-yet-visited entry mid-iteration; mutating a *different* node's
+      //      set is fine because that set is not being iterated.)
+      // Violating either gives silently skipped wakeups that are near-impossible
+      // to reproduce. Any new producer/listener must preserve it.
+      if (!this.listeners) return;
+      // Fire every non-exclusive listener. Among EPOLLEXCLUSIVE registrations
+      // (one fd watched by several epolls) wake only one, rotating round-robin
+      // per node, to avoid a thundering herd. (Only epoll registrations are ever
+      // exclusive; poll waiters and a node's own consumers are not.)
+      var excl;
+      for (var entry of this.listeners) {
+        if (entry.exclusive) (excl ||= []).push(entry); else entry.cb(flags);
+      }
+      if (excl) {
+        var i = (this.exclTurn || 0) % excl.length;
+        this.exclTurn = i + 1;
+        excl[i].cb(flags);
+      }
     }
   },
   lookupPath(path, opts = {}) {
@@ -2486,6 +2504,27 @@ var FS = {
     }
     return parent.node_ops.symlink(parent, newname, oldpath);
   },
+  link(oldpath, newpath, flags) {
+    var lookup = FS.lookupPath(newpath, {
+      parent: true
+    });
+    var parent = lookup.node;
+    if (!parent) {
+      throw new FS.ErrnoError(44);
+    }
+    var newname = PATH.basename(newpath);
+    var errCode = FS.mayCreate(parent, newname);
+    if (errCode) {
+      throw new FS.ErrnoError(errCode);
+    }
+    // Hardlinks are only supported by filesystem backends that provide a
+    // `link` node op (e.g. NODERAWFS backed by the host). NODEFS omits it:
+    // a host hardlink cannot be confined to the mount root.
+    if (!parent.node_ops.link) {
+      throw new FS.ErrnoError(34);
+    }
+    return parent.node_ops.link(parent, newname, oldpath, flags);
+  },
   rename(old_path, new_path) {
     var old_dirname = PATH.dirname(old_path);
     var new_dirname = PATH.dirname(new_path);
@@ -2743,15 +2782,14 @@ var FS = {
     }
     FS.doTruncate(stream, stream.node, len);
   },
-  utime(path, atime, mtime) {
+  utime(path, atime, mtime, dontFollow) {
     var lookup = FS.lookupPath(path, {
-      follow: true
+      follow: !dontFollow
     });
-    var node = lookup.node;
-    var setattr = FS.checkOpExists(node.node_ops.setattr, 63);
-    setattr(node, {
+    FS.doSetAttr(null, lookup.node, {
       atime,
-      mtime
+      mtime,
+      dontFollow
     });
   },
   open(path, flags, mode = 438) {
@@ -2853,6 +2891,11 @@ var FS = {
     }
     if (stream.getdents) stream.getdents = null;
     // free readdir state
+    // The fd is going away: wake anything waiting on it (poll/epoll) with
+    // POLLNVAL so a blocking wait unblocks and an epoll registration is evicted
+    // on its next derive. Only sockets/pipes/epoll ever carry a wait-queue, so
+    // for every other stream (incl. nodeless noderawfs stdio) this is a no-op.
+    stream.node?.notifyListeners(32);
     try {
       if (stream.stream_ops.close) {
         stream.stream_ops.close(stream);
@@ -3320,7 +3363,7 @@ var FS = {
         var xhr = new XMLHttpRequest;
         xhr.open("HEAD", url, false);
         xhr.send(null);
-        if (!(xhr.status >= 200 && xhr.status < 300 || xhr.status === 304)) abort("Couldn't load " + url + ". Status: " + xhr.status);
+        if (!(xhr.status >= 200 && xhr.status < 300 || xhr.status === 304)) abort(`Couldn't load ${url}. Status: ${xhr.status}`);
         var datalength = Number(xhr.getResponseHeader("Content-length"));
         var header;
         var hasByteServing = (header = xhr.getResponseHeader("Accept-Ranges")) && header === "bytes";
@@ -3335,14 +3378,14 @@ var FS = {
           // TODO: Use mozResponseArrayBuffer, responseStream, etc. if available.
           var xhr = new XMLHttpRequest;
           xhr.open("GET", url, false);
-          if (datalength !== chunkSize) xhr.setRequestHeader("Range", "bytes=" + from + "-" + to);
+          if (datalength !== chunkSize) xhr.setRequestHeader("Range", `bytes=${from}-${to}`);
           // Some hints to the browser that we want binary data.
           xhr.responseType = "arraybuffer";
           if (xhr.overrideMimeType) {
             xhr.overrideMimeType("text/plain; charset=x-user-defined");
           }
           xhr.send(null);
-          if (!(xhr.status >= 200 && xhr.status < 300 || xhr.status === 304)) abort("Couldn't load " + url + ". Status: " + xhr.status);
+          if (!(xhr.status >= 200 && xhr.status < 300 || xhr.status === 304)) abort(`Couldn't load ${url}. Status: ${xhr.status}`);
           if (xhr.response !== undefined) {
             return new Uint8Array(/** @type{Array<number>} */ (xhr.response || []));
           }
@@ -3484,6 +3527,8 @@ var FS = {
   return UTF8Decoder.decode(HEAPU8.subarray(ptr >>> 0, end >>> 0));
 };
 
+/** not-@type {!BigInt64Array} */ var HEAP64;
+
 var SYSCALLS = {
   currentUmask: 18,
   calculateAt(dirfd, path, allowEmpty) {
@@ -3549,7 +3594,7 @@ var SYSCALLS = {
       // MAP_PRIVATE calls need not to be synced back to underlying fs
       return 0;
     }
-    var buffer = HEAPU8.slice(addr, addr + len);
+    var buffer = HEAPU8.subarray(addr >>> 0, addr + len >>> 0);
     FS.msync(stream, buffer, offset, len, flags);
   },
   getStreamFromFD(fd) {
@@ -3611,6 +3656,8 @@ var syscallGetVarargI = () => {
 };
 
 var syscallGetVarargP = syscallGetVarargI;
+
+/** @type {!Int16Array} */ var HEAP16;
 
 function ___syscall_fcntl64(fd, cmd, varargs) {
   varargs >>>= 0;
@@ -3768,6 +3815,8 @@ function ___syscall_getdents64(fd, dirp, count) {
     return -e.errno;
   }
 }
+
+var ___syscall_getuid32 = () => 0;
 
 function ___syscall_ioctl(fd, op, varargs) {
   varargs >>>= 0;
@@ -4023,6 +4072,7 @@ function ___syscall_utimensat(dirfd, path, times, flags) {
   path >>>= 0;
   times >>>= 0;
   try {
+    var nofollow = flags & 256;
     path = SYSCALLS.getStr(path);
     path = SYSCALLS.calculateAt(dirfd, path, true);
     var now = Date.now(), atime, mtime;
@@ -4053,7 +4103,7 @@ function ___syscall_utimensat(dirfd, path, times, flags) {
     // null here means UTIME_OMIT was passed. If both were set to UTIME_OMIT then
     // we can skip the call completely.
     if ((mtime ?? atime) !== null) {
-      FS.utime(path, atime, mtime);
+      FS.utime(path, atime, mtime, nofollow);
     }
     return 0;
   } catch (e) {
@@ -4084,12 +4134,12 @@ var registeredTypes = {};
 
 var typeDependencies = {};
 
-var InternalError = class InternalError extends Error {
+class InternalError extends Error {
   constructor(message) {
     super(message);
     this.name = "InternalError";
   }
-};
+}
 
 var throwInternalError = message => {
   throw new InternalError(message);
@@ -4201,12 +4251,12 @@ var AsciiToString = ptr => {
   }
 };
 
-var BindingError = class BindingError extends Error {
+class BindingError extends Error {
   constructor(message) {
     super(message);
     this.name = "BindingError";
   }
-};
+}
 
 var throwBindingError = message => {
   throw new BindingError(message);
@@ -4236,6 +4286,10 @@ var throwBindingError = message => {
 /** @param {Object=} options */ function registerType(rawType, registeredInstance, options = {}) {
   return sharedRegisterType(rawType, registeredInstance, options);
 }
+
+/** @type {!Uint16Array} */ var HEAPU16;
+
+/** not-@type {!BigUint64Array} */ var HEAPU64;
 
 var integerReadValueFromPointer = (name, width, signed) => {
   // integers are quite common, so generate very specialized functions
@@ -5021,12 +5075,12 @@ function craftInvokerFunction(humanName, argTypes, classType, cppInvokerFunc, cp
   // isAsync: Optional. If true, returns an async function. Async bindings are only supported with JSPI.
   var argCount = argTypes.length;
   if (argCount < 2) {
-    throwBindingError("argTypes array size mismatch! Must at least get return value and 'this' types!");
+    throwBindingError("argTypes array size mismatch! Must at least get return value and receiver (this) types!");
   }
   var isClassMethodFunc = (argTypes[1] !== null && classType !== null);
   // Free functions with signature "void function()" do not need an invoker that marshalls between wire types.
   // TODO: This omits argument count check - enable only at -O3 or similar.
-  //    if (ENABLE_UNSAFE_OPTS && argCount == 2 && argTypes[0].name == "void" && !isClassMethodFunc) {
+  //    if (ENABLE_UNSAFE_OPTS && argCount == 2 && argTypes[0].name == 'void' && !isClassMethodFunc) {
   //       return FUNCTION_TABLE[fn];
   //    }
   // Determine if we need to use a dynamic stack to store the destructors for the function parameters.
@@ -5448,6 +5502,10 @@ function __embind_register_enum_value(rawEnumType, name, enumValue) {
   }
 }
 
+/** @type {!Float32Array} */ var HEAPF32;
+
+/** @type {!Float64Array} */ var HEAPF64;
+
 var floatReadValueFromPointer = (name, width) => {
   switch (width) {
    case 4:
@@ -5699,9 +5757,7 @@ var UTF16ToString = (ptr, maxBytesToRead, ignoreNul) => {
   return UTF16Decoder.decode(HEAPU16.subarray(idx >>> 0, endIdx >>> 0));
 };
 
-var stringToUTF16 = (str, outPtr, maxBytesToWrite) => {
-  // Backwards compatibility: if max bytes is not specified, assume unsafe unbounded write is allowed.
-  maxBytesToWrite ??= 2147483647;
+var stringToUTF16 = (str, outPtr, maxBytesToWrite = 2147483647) => {
   if (maxBytesToWrite < 2) return 0;
   maxBytesToWrite -= 2;
   // Null terminator.
@@ -5734,10 +5790,8 @@ var UTF32ToString = (ptr, maxBytesToRead, ignoreNul) => {
   return str;
 };
 
-var stringToUTF32 = (str, outPtr, maxBytesToWrite) => {
+var stringToUTF32 = (str, outPtr, maxBytesToWrite = 2147483647) => {
   outPtr >>>= 0;
-  // Backwards compatibility: if max bytes is not specified, assume unsafe unbounded write is allowed.
-  maxBytesToWrite ??= 2147483647;
   if (maxBytesToWrite < 4) return 0;
   var startPtr = outPtr;
   var endPtr = startPtr + maxBytesToWrite - 4;
@@ -6056,6 +6110,9 @@ function __gmtime_js(time, tmPtr) {
   time = bigintToI53Checked(time);
   tmPtr >>>= 0;
   var date = new Date(time * 1e3);
+  if (isNaN(date.getTime())) {
+    return 1;
+  }
   HEAP32[((tmPtr) >>> 2) >>> 0] = date.getUTCSeconds();
   HEAP32[(((tmPtr) + (4)) >>> 2) >>> 0] = date.getUTCMinutes();
   HEAP32[(((tmPtr) + (8)) >>> 2) >>> 0] = date.getUTCHours();
@@ -6066,6 +6123,7 @@ function __gmtime_js(time, tmPtr) {
   var start = Date.UTC(date.getUTCFullYear(), 0, 1, 0, 0, 0, 0);
   var yday = ((date.getTime() - start) / (1e3 * 60 * 60 * 24)) | 0;
   HEAP32[(((tmPtr) + (28)) >>> 2) >>> 0] = yday;
+  return 0;
 }
 
 var isLeapYear = year => year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
@@ -6086,6 +6144,9 @@ function __localtime_js(time, tmPtr) {
   time = bigintToI53Checked(time);
   tmPtr >>>= 0;
   var date = new Date(time * 1e3);
+  if (isNaN(date.getTime())) {
+    return 1;
+  }
   HEAP32[((tmPtr) >>> 2) >>> 0] = date.getSeconds();
   HEAP32[(((tmPtr) + (4)) >>> 2) >>> 0] = date.getMinutes();
   HEAP32[(((tmPtr) + (8)) >>> 2) >>> 0] = date.getHours();
@@ -6102,6 +6163,7 @@ function __localtime_js(time, tmPtr) {
   var winterOffset = start.getTimezoneOffset();
   var dst = (summerOffset != winterOffset && date.getTimezoneOffset() == Math.min(winterOffset, summerOffset)) | 0;
   HEAP32[(((tmPtr) + (32)) >>> 2) >>> 0] = dst;
+  return 0;
 }
 
 var __mktime_js = function(tmPtr) {
@@ -6123,13 +6185,17 @@ var __mktime_js = function(tmPtr) {
     // DST is in December in South
     if (dst < 0) {
       // Attention: some regions don't have DST at all.
-      HEAP32[(((tmPtr) + (32)) >>> 2) >>> 0] = Number(summerOffset != winterOffset && dstOffset == guessedOffset);
+      dst = Number(summerOffset != winterOffset && dstOffset == guessedOffset);
     } else if ((dst > 0) != (dstOffset == guessedOffset)) {
       var nonDstOffset = Math.max(winterOffset, summerOffset);
       var trueOffset = dst > 0 ? dstOffset : nonDstOffset;
       // Don't try setMinutes(date.getMinutes() + ...) -- it's messed up.
       date.setTime(date.getTime() + (trueOffset - guessedOffset) * 6e4);
+      if (isNaN(date.getTime())) {
+        return -1;
+      }
     }
+    HEAP32[(((tmPtr) + (32)) >>> 2) >>> 0] = dst;
     HEAP32[(((tmPtr) + (24)) >>> 2) >>> 0] = date.getDay();
     var yday = ydayFromDate(date) | 0;
     HEAP32[(((tmPtr) + (28)) >>> 2) >>> 0] = yday;
@@ -6465,7 +6531,7 @@ function _emscripten_stack_unwind_buffer(addr, buffer, count) {
     ++offset;
   }
   for (var i = 0; i < count && stack[i + offset]; ++i) {
-    HEAP32[(((buffer) + (i * 4)) >>> 2) >>> 0] = convertFrameToPC(stack[i + offset]);
+    HEAPU32[(((buffer) + (i * 4)) >>> 2) >>> 0] = convertFrameToPC(stack[i + offset]);
   }
   return i;
 }
@@ -6949,6 +7015,28 @@ var WebGPU = {
     HEAP32[(((infoStruct) + (40)) >>> 2) >>> 0] = adapterType;
     HEAPU32[(((infoStruct) + (44)) >>> 2) >>> 0] = 0;
     HEAPU32[(((infoStruct) + (48)) >>> 2) >>> 0] = 0;
+    WebGPU.iterateExtensions(infoStruct, {
+      327739: ext => {
+        let configCount = 0;
+        let configsPtr = 0;
+        if (info.subgroupMatrixConfigs) {
+          configCount = info.subgroupMatrixConfigs.length;
+          configsPtr = _malloc(configCount * 20);
+          for (const [i, cfg] of info.subgroupMatrixConfigs.entries()) {
+            const ptr = configsPtr + i * 20;
+            const componentType = WebGPU.SubgroupMatrixComponentType.indexOf(cfg.componentType);
+            const resultComponentType = WebGPU.SubgroupMatrixComponentType.indexOf(cfg.resultComponentType);
+            HEAP32[((ptr) >>> 2) >>> 0] = componentType;
+            HEAP32[(((ptr) + (4)) >>> 2) >>> 0] = resultComponentType;
+            HEAPU32[(((ptr) + (8)) >>> 2) >>> 0] = cfg.M;
+            HEAPU32[(((ptr) + (12)) >>> 2) >>> 0] = cfg.N;
+            HEAPU32[(((ptr) + (16)) >>> 2) >>> 0] = cfg.K;
+          }
+        }
+        HEAPU32[(((ext) + (12)) >>> 2) >>> 0] = configsPtr;
+        HEAPU32[(((ext) + (8)) >>> 2) >>> 0] = configCount;
+      }
+    });
   },
   AddressMode: [ , "clamp-to-edge", "repeat", "mirror-repeat" ],
   BlendFactor: [ , "zero", "one", "src", "one-minus-src", "src-alpha", "one-minus-src-alpha", "dst", "one-minus-dst", "dst-alpha", "one-minus-dst-alpha", "src-alpha-saturated", "constant", "one-minus-constant", "src1", "one-minus-src1", "src1-alpha", "one-minus-src1-alpha" ],
@@ -6987,7 +7075,8 @@ var WebGPU = {
     22: "texture-component-swizzle",
     23: "subgroup-size-control",
     327692: "chromium-experimental-unorm16-texture-formats",
-    327729: "chromium-experimental-multi-draw-indirect"
+    327729: "chromium-experimental-multi-draw-indirect",
+    327732: "chromium-experimental-subgroup-matrix"
   },
   FilterMode: [ , "nearest", "linear" ],
   FrontFace: [ , "ccw", "cw" ],
@@ -7005,6 +7094,7 @@ var WebGPU = {
   StencilOperation: [ , "keep", "zero", "replace", "invert", "increment-clamp", "decrement-clamp", "increment-wrap", "decrement-wrap" ],
   StorageTextureAccess: [ , , "write-only", "read-only", "read-write" ],
   StoreOp: [ , "store", "discard" ],
+  SubgroupMatrixComponentType: [ , "f32", "f16", "u32", "i32", "u8", "i8" ],
   SurfaceGetCurrentTextureStatus: [ , "success-optimal", "success-suboptimal", "timeout", "outdated", "lost", "error" ],
   TextureAspect: [ , "all", "stencil-only", "depth-only" ],
   TextureDimension: [ , "1d", "2d", "3d" ],
@@ -7014,7 +7104,7 @@ var WebGPU = {
   ToneMappingMode: [ , "standard", "extended" ],
   VertexFormat: [ , "uint8", "uint8x2", "uint8x4", "sint8", "sint8x2", "sint8x4", "unorm8", "unorm8x2", "unorm8x4", "snorm8", "snorm8x2", "snorm8x4", "uint16", "uint16x2", "uint16x4", "sint16", "sint16x2", "sint16x4", "unorm16", "unorm16x2", "unorm16x4", "snorm16", "snorm16x2", "snorm16x4", "float16", "float16x2", "float16x4", "float32", "float32x2", "float32x3", "float32x4", "uint32", "uint32x2", "uint32x3", "uint32x4", "sint32", "sint32x2", "sint32x3", "sint32x4", "unorm10-10-10-2", "unorm8x4-bgra", "snorm10-10-10-2" ],
   VertexStepMode: [ , "vertex", "instance" ],
-  WGSLLanguageFeatureName: [ , "readonly_and_readwrite_storage_textures", "packed_4x8_integer_dot_product", "unrestricted_pointer_parameters", "pointer_composite_access", "uniform_buffer_standard_layout", "subgroup_id", "texture_and_sampler_let", "subgroup_uniformity", "texture_formats_tier1", "linear_indexing", "immediate_address_space" ]
+  WGSLLanguageFeatureName: [ , "readonly_and_readwrite_storage_textures", "packed_4x8_integer_dot_product", "unrestricted_pointer_parameters", "pointer_composite_access", "uniform_buffer_standard_layout", "subgroup_id", "texture_and_sampler_let", "subgroup_uniformity", "texture_formats_tier1", "linear_indexing", "immediate_address_space", "buffer_view", "swizzle_assignment", "fragment_depth" ]
 };
 
 function _emscripten_webgpu_get_device() {
@@ -7342,7 +7432,17 @@ function _fd_close(fd) {
     var ptr = HEAPU32[((iov) >>> 2) >>> 0];
     var len = HEAPU32[(((iov) + (4)) >>> 2) >>> 0];
     iov += 8;
-    var curr = FS.read(stream, HEAP8, ptr, len, offset);
+    try {
+      var curr = FS.read(stream, HEAP8, ptr, len, offset);
+    } catch (e) {
+      // On a non-blocking stream a subsequent read may would-block after we
+      // already gathered data. POSIX readv is a single gather-read: return
+      // what we have rather than failing the whole call.
+      if (ret > 0 && e instanceof FS.ErrnoError && (e.errno == 6 || e.errno == 6)) {
+        break;
+      }
+      throw e;
+    }
     if (curr < 0) return -1;
     ret += curr;
     if (curr < len) break;
@@ -7404,23 +7504,27 @@ function _fd_seek(fd, offset, whence, newOffset) {
 }
 
 /** @param {number=} offset */ var doWritev = (stream, iov, iovcnt, offset) => {
-  var ret = 0;
-  for (var i = 0; i < iovcnt; i++) {
+  // Gather all iovecs into one contiguous buffer and issue a single
+  // FS.write, matching POSIX writev's single gather-write semantics (as
+  // __syscall_sendmsg already does). Per-iovec writes fragment a stream
+  // socket send into multiple segments, breaking stream byte semantics.
+  if (iovcnt == 1) {
+    // Single iovec: write directly from HEAP8, no gather buffer needed.
+    return FS.write(stream, HEAP8, HEAPU32[((iov) >>> 2) >>> 0], HEAPU32[(((iov) + (4)) >>> 2) >>> 0], offset);
+  }
+  var total = 0;
+  for (var i = 0, p = iov; i < iovcnt; i++, p += 8) {
+    total += HEAPU32[(((p) + (4)) >>> 2) >>> 0];
+  }
+  var view = new Uint8Array(total);
+  var voff = 0;
+  for (var i = 0; i < iovcnt; i++, iov += 8) {
     var ptr = HEAPU32[((iov) >>> 2) >>> 0];
     var len = HEAPU32[(((iov) + (4)) >>> 2) >>> 0];
-    iov += 8;
-    var curr = FS.write(stream, HEAP8, ptr, len, offset);
-    if (curr < 0) return -1;
-    ret += curr;
-    if (curr < len) {
-      // No more space to write.
-      break;
-    }
-    if (typeof offset != "undefined") {
-      offset += curr;
-    }
+    view.set(HEAPU8.subarray(ptr >>> 0, ptr + len >>> 0), voff);
+    voff += len;
   }
-  return ret;
+  return FS.write(stream, view, 0, total, offset);
 };
 
 function _fd_write(fd, iov, iovcnt, pnum) {
@@ -7586,6 +7690,14 @@ function _wgpuComputePassEncoderSetPipeline(passPtr, pipelinePtr) {
   var pass = WebGPU.getJsObject(passPtr);
   var pipeline = WebGPU.getJsObject(pipelinePtr);
   pass.setPipeline(pipeline);
+}
+
+function _wgpuComputePipelineGetBindGroupLayout(pipelinePtr, groupIndex) {
+  pipelinePtr >>>= 0;
+  var pipeline = WebGPU.getJsObject(pipelinePtr);
+  var ptr = _emwgpuCreateBindGroupLayout(0);
+  WebGPU.Internals.jsObjectInsert(ptr, pipeline.getBindGroupLayout(groupIndex));
+  return ptr;
 }
 
 var _wgpuDeviceCreateBindGroup = function(devicePtr, descriptor) {
@@ -7944,18 +8056,19 @@ init_RegisteredPointer();
 // but before the wasm module is created.
 {
   // Begin ATMODULES hooks
-  if (Module["preloadPlugins"]) preloadPlugins = Module["preloadPlugins"];
   if (Module["noExitRuntime"]) noExitRuntime = Module["noExitRuntime"];
   if (Module["print"]) out = Module["print"];
   if (Module["printErr"]) err = Module["printErr"];
-  if (Module["wasmBinary"]) wasmBinary = Module["wasmBinary"];
   // End ATMODULES hooks
   if (Module["arguments"]) programArgs = Module["arguments"];
   if (Module["thisProgram"]) thisProgram = Module["thisProgram"];
-  if (Module["preInit"]) {
-    if (typeof Module["preInit"] == "function") Module["preInit"] = [ Module["preInit"] ];
-    while (Module["preInit"].length > 0) {
-      Module["preInit"].shift()();
+  var preInit = Module["preInit"];
+  if (preInit) {
+    if (typeof preInit == "function") Module["preInit"] = preInit = [ preInit ];
+    // Written as a loop so that preInit functions that themselves add more
+    // preInit functions.  Is this actually needed?
+    while (preInit.length > 0) {
+      preInit.shift()();
     }
   }
 }
@@ -7984,8 +8097,8 @@ Module["FS_createLazyFile"] = FS_createLazyFile;
 // End JS library exports
 // end include: postlibrary.js
 var ASM_CONSTS = {
-  2207593: () => !!Module["preinitializedWebGPUDevice"],
-  2207644: $0 => {
+  2287801: () => !!Module["preinitializedWebGPUDevice"],
+  2287852: $0 => {
     const device = WebGPU.getJsObject($0);
     return device.features.has("subgroups");
   }
@@ -8085,12 +8198,19 @@ function __asyncjs__CallStreamWeightsOnWeb(tfl_ids, wgpu_buffers, offsets, lengt
       console.error("Stream weights callback is not registered or is not a function");
       return 1;
     }
-    const tflIdsArray = new Int32Array(Module.HEAP32.buffer, tfl_ids, count);
-    const wgpuBuffersArray = new Uint32Array(Module.HEAPU32.buffer, wgpu_buffers, count);
-    const offsetsArray = new Float64Array(Module.HEAPF64.buffer, offsets, count);
-    const lengthsArray = new Float64Array(Module.HEAPF64.buffer, lengths, count);
+    const view = new DataView(Module.HEAPU8.buffer);
+    const tflIdsArray = new Int32Array(count);
+    const wgpuBuffersArray = new Uint32Array(count);
+    const offsetsArray = new Float64Array(count);
+    const lengthsArray = new Float64Array(count);
+    for (let i = 0; i < count; i++) {
+      tflIdsArray[i] = view.getInt32(tfl_ids + i * 4, true);
+      wgpuBuffersArray[i] = view.getUint32(wgpu_buffers + i * 4, true);
+      offsetsArray[i] = view.getFloat64(offsets + i * 8, true);
+      lengthsArray[i] = view.getFloat64(lengths + i * 8, true);
+    }
     try {
-      await callback(new Int32Array(tflIdsArray), new Uint32Array(wgpuBuffersArray), new Float64Array(offsetsArray), new Float64Array(lengthsArray));
+      await callback(tflIdsArray, wgpuBuffersArray, offsetsArray, lengthsArray);
     } catch (e) {
       console.error("Error in streamWeightsOnWeb:", e);
       return 1;
@@ -8214,6 +8334,7 @@ var wasmImports = {
   /** @export */ __syscall_ftruncate64: ___syscall_ftruncate64,
   /** @export */ __syscall_getcwd: ___syscall_getcwd,
   /** @export */ __syscall_getdents64: ___syscall_getdents64,
+  /** @export */ __syscall_getuid32: ___syscall_getuid32,
   /** @export */ __syscall_ioctl: ___syscall_ioctl,
   /** @export */ __syscall_lstat64: ___syscall_lstat64,
   /** @export */ __syscall_mkdirat: ___syscall_mkdirat,
@@ -8315,6 +8436,7 @@ var wasmImports = {
   /** @export */ wgpuComputePassEncoderEnd: _wgpuComputePassEncoderEnd,
   /** @export */ wgpuComputePassEncoderSetBindGroup: _wgpuComputePassEncoderSetBindGroup,
   /** @export */ wgpuComputePassEncoderSetPipeline: _wgpuComputePassEncoderSetPipeline,
+  /** @export */ wgpuComputePipelineGetBindGroupLayout: _wgpuComputePipelineGetBindGroupLayout,
   /** @export */ wgpuDeviceCreateBindGroup: _wgpuDeviceCreateBindGroup,
   /** @export */ wgpuDeviceCreateBindGroupLayout: _wgpuDeviceCreateBindGroupLayout,
   /** @export */ wgpuDeviceCreateCommandEncoder: _wgpuDeviceCreateCommandEncoder,
@@ -8357,37 +8479,22 @@ function applySignatureConversions(wasmExports) {
 // include: postamble.js
 // === Auto-generated postamble setup entry stuff ===
 async function run() {
-  if (runDependencies > 0) {
-    await new Promise(resolve => dependenciesFulfilled = resolve);
-  }
   preRun();
-  // a preRun added a dependency, run will be called later
-  if (runDependencies > 0) {
-    await new Promise(resolve => dependenciesFulfilled = resolve);
+  if (runDependencies) {
+    await resolveRunDependencies();
   }
-  async function doRun() {
-    // run may have just been called through dependencies being fulfilled just in this very frame,
-    // or while the async setStatus time below was happening
-    Module["calledRun"] = true;
-    if (ABORT) return;
-    initRuntime();
-    Module["onRuntimeInitialized"]?.();
-    postRun();
+  var setStatus = Module["setStatus"];
+  if (setStatus) {
+    setStatus("Running...");
+    // Yield to the event loop to allow the browser to paint "Running..."
+    await new Promise(resolve => setTimeout(resolve, 1));
+    // Then we want to clear the status text, but only after the rest of this function runs.
+    setTimeout(setStatus, 1, "");
   }
-  if (Module["setStatus"]) {
-    Module["setStatus"]("Running...");
-    // Yield the main thread to allow the browser to paint "Running...", then clear
-    // the status text after the synchronous doRun() completes.
-    await new Promise(resolve => {
-      setTimeout(() => {
-        setTimeout(() => Module["setStatus"](""), 1);
-        doRun();
-        resolve();
-      }, 1);
-    });
-  } else {
-    doRun();
-  }
+  if (ABORT) return;
+  initRuntime();
+  Module["onRuntimeInitialized"]?.();
+  postRun();
 }
 
 var wasmExports;
