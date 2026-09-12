@@ -1,5 +1,5 @@
 {
-  "name": "gemini-ai-translator-offline",
+  "name": "LocalAI-Translator",
   "private": false,
   "version": "1.0.5",
   "type": "module",
@@ -10,7 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-	  "@fluidinference/fluidvad": "^0.2.0",
+    "@fluidinference/fluidvad": "^0.2.0",
     "@google/genai": "^1.48.0",
     "@huggingface/transformers": "^4.2.0",
     "@jeffpeng3/nemotron-asr-core": "^0.2.3",
@@ -21,6 +21,7 @@
     "i18next": "^23.12.2",
     "i18next-browser-languagedetector": "^8.0.0",
     "idb": "^8.0.3",
+    "lucide-react": "^1.45.0",
     "onnxruntime-web": "^1.29.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
