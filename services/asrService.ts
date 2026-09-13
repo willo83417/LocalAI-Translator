@@ -26,6 +26,13 @@ export const checkAsrModelCacheStatus = async (modelId: string, quantization?: a
             return urls.some(url => url.includes('encoder.onnx'));
         }
 
+        if (modelId === 'qwen3' || modelId === 'qwen3-asr') {
+            const cache = await caches.open('qwen3-asr-0.6b-onnx');
+            const keys = await cache.keys();
+            const urls = keys.map(k => k.url);
+            return urls.some(url => url.includes('encoder') && (url.includes('encoder.onnx') || url.includes('encoder.fp16.onnx')));
+        }
+
         // We do a robust custom Cache API check because ModelRegistry.is_pipeline_cached 
         // sometimes incorrectly returns false for Whisper models due to optional files.
         const cache = await caches.open('transformers-cache');
@@ -72,6 +79,8 @@ export const clearAsrCache = async (): Promise<void> => {
         await caches.delete('transformers-cache');
         // Delete nemotron cache
         await caches.delete('nemotron-asr-int4-1');
+        // Delete qwen3 cache
+        await caches.delete('qwen3-asr-0.6b-onnx');
         console.log("ASR model cache cleared successfully.");
     } catch (err) {
         console.error("Error clearing ASR model cache:", err);

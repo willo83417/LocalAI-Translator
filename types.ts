@@ -20,6 +20,15 @@ export interface AsrModel {
     size: string;
 }
 
+export interface AsrModelRuntime {
+    id: AsrEngineType;
+    modelId: string;
+    engine: AsrEngineType;
+    name: string;
+    size: string;
+    description: string;
+}
+
 export interface CustomOfflineModel {
     name: string;
     value: string;
@@ -62,7 +71,7 @@ export interface EsearchOCROutput {
 
 export type OcrEngineStatus = 'uninitialized' | 'initializing' | 'ready' | 'error';
 
-export type AsrEngineType = 'whisper' | 'nemotron';
+export type AsrEngineType = 'whisper' | 'nemotron' | 'qwen3';
 export type NemotronProfile = 'TURBO' | 'FAST' | 'BALANCED' | 'NORMAL' | 'HIGH';
 export type NemotronBeamWidth = 1 | 2 | 3 | 4 | 5;
 

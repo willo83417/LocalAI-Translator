@@ -1,4 +1,4 @@
-import type { Language, AsrModel } from './types';
+import type { Language, AsrModel, AsrModelRuntime } from './types';
 
 export const LANGUAGES: Language[] = [
     { code: 'auto', name: 'languages.autoDetect' },
@@ -122,6 +122,33 @@ export const ASR_MODELS: AsrModel[] = [
     }
 ];
 
+export const ASR_MODELS_RUNTIME: AsrModelRuntime[] = [
+    {
+        id: 'whisper',
+        modelId: 'whisper',
+        engine: 'whisper',
+        name: 'Transformers.js Whisper',
+        size: '~150 MB - ~590 MB',
+        description: 'Transformers.js WebGPU / WASM'
+    },
+    {
+        id: 'nemotron',
+        modelId: 'nemotron',
+        engine: 'nemotron',
+        name: 'Nemotron-ASR (onnxruntime-web)',
+        size: '~863 MB',
+        description: 'Fast Conformer CTC'
+    },
+    {
+        id: 'qwen3',
+        modelId: 'qwen3',
+        engine: 'qwen3',
+        name: 'Qwen3-ASR-0.6B (onnxruntime-web)',
+        size: 'q4f16 (~888MB) / q4 (~1.29GB)',
+        description: 'Auto WebGPU shader-f16'
+    }
+];
+
 export const OCR_MODELS = {
   PP_v6_tiny: {
     name: "PP-OCRv6_tiny",
@@ -148,7 +175,7 @@ export const OCR_MODELS = {
     },
   },
   ch_v5: {
-    name: "ch_PP-OCRv5_mobile",
+    name: "ch_PP-OCRv5",
     description: "settings.ocrModelDescriptions.ch_v5",
     paths: {
       detPath: 'https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.8.0/onnx/PP-OCRv5/det/ch_PP-OCRv5_det_mobile.onnx',
@@ -157,7 +184,7 @@ export const OCR_MODELS = {
     },
   },
   latin_v5: {
-    name: "latin_PP-OCRv5_mobile",
+    name: "latin_PP-OCRv5",
     description: "settings.ocrModelDescriptions.latin_v5",
     paths: {
       detPath: 'https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.8.0/onnx/PP-OCRv5/det/ch_PP-OCRv5_det_mobile.onnx',
@@ -166,7 +193,7 @@ export const OCR_MODELS = {
     },
   },
   kr_v5: {
-    name: "korean_PP-OCRv5_mobile",
+    name: "korean_PP-OCRv5",
     description: "settings.ocrModelDescriptions.kr_v5",
     paths: {
       detPath: 'https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.8.0/onnx/PP-OCRv5/det/ch_PP-OCRv5_det_mobile.onnx',

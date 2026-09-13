@@ -1,4 +1,5 @@
 import { pipeline, env, TextStreamer, StoppingCriteria, StoppingCriteriaList } from '@huggingface/transformers';
+import { toTraditionalChinese, isTraditionalChinese } from '../utils/chineseConverter';
 
 // --- Environment Configuration ---
 env.backends.onnx.executionProviders = ['webgpu', 'wasm'];
@@ -146,6 +147,7 @@ class Transcriber {
 
         try {
             const tokenizer = this.transcriber.tokenizer;
+            const shouldConvertToTraditional = isTraditionalChinese(promptLanguage) || isTraditionalChinese(asrLanguage);
             let fullTranscription = "";
 
             // Use TextStreamer to capture partial results.
@@ -158,7 +160,8 @@ class Transcriber {
                         throw new Error('ABORTED');
                     }
                     fullTranscription += text;
-                    post({ type: 'transcription-partial', payload: fullTranscription });
+                    const outputPartial = shouldConvertToTraditional ? toTraditionalChinese(fullTranscription) : fullTranscription;
+                    post({ type: 'transcription-partial', payload: outputPartial });
                 }
             });
 
@@ -190,7 +193,8 @@ class Transcriber {
             }
 
             // Ensure we send the final authoritative result from the pipeline output
-            const finalText = (Array.isArray(output) ? output[0].text : output.text) || '';
+            const rawFinalText = (Array.isArray(output) ? output[0].text : output.text) || '';
+            const finalText = shouldConvertToTraditional ? toTraditionalChinese(rawFinalText) : rawFinalText;
             post({ type: 'transcription', payload: { text: finalText.trim(), isFinal } });
             post({ type: 'log', payload: 'Transcription completed successfully.' });
         } catch (error) {

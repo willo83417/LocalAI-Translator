@@ -1,9 +1,9 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { XIcon, TrashIcon } from './icons';
 import { DownloadProgress } from '../services/downloadManager';
-import { OFFLINE_MODELS, OFFLINE_MODELS_TS, ASR_MODELS, OCR_MODELS } from '../constants';
+import { OFFLINE_MODELS, OFFLINE_MODELS_TS, ASR_MODELS, ASR_MODELS_RUNTIME, OCR_MODELS } from '../constants';
 import type { Language, OcrEngineStatus, OcrModelConfig, AsrEngineType, NemotronProfile, NemotronBeamWidth } from '../types';
 
 interface SettingsModalProps {
@@ -194,8 +194,10 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     const [isOcrAutoInitEnabled, setIsOcrAutoInitEnabled] = useState(currentIsOcrAutoInitEnabled);
 
 
+    const prevIsOpenRef = useRef(false);
+
     useEffect(() => {
-        if (isOpen) {
+        if (isOpen && !prevIsOpenRef.current) {
             setApiKey(currentApiKey);
             setModelName(currentModelName);
             setOnlineProvider(currentOnlineProvider);
@@ -235,16 +237,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
             setSelectedOcrModel(currentSelectedOcrModel);
             setIsOcrAutoInitEnabled(currentIsOcrAutoInitEnabled);
         }
-    }, [
-        isOpen, currentApiKey, currentModelName, currentOnlineProvider, currentOpenaiApiUrl, 
-        currentHuggingFaceApiKey, currentOfflineModelName, currentIsOfflineModeEnabled, 
-        currentIsTwoStepJpCnEnabled, currentIsOfflineTtsEnabled, currentOfflineTtsVoiceURI, 
-        currentOfflineTtsRate, currentOfflineTtsPitch, currentOfflineMaxTokens, currentOfflineTopK, 
-        currentOfflineTemperature, currentOfflineRandomSeed, currentOfflineSupportAudio, currentOfflineAudioRealtime,
-        currentOfflineMaxNumImages, currentIsOfflineAsrEnabled, currentIsRealtimeAsrEnabled, currentIsWebSpeechApiEnabled,
-        currentAsrModelId, currentAsrEngine, currentAsrProfile, currentAsrBeamWidth, currentIsNoiseCancellationEnabled, currentAudioGainValue, currentSelectedOcrModel,
-        currentIsOcrAutoInitEnabled
-    ]);
+        prevIsOpenRef.current = isOpen;
+    }, [isOpen]);
     
     useEffect(() => {
         if (isOpen && voices.length > 0 && targetLang) {
@@ -298,7 +292,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
         setOfflineSupportAudio(false);
         setOfflineAudioRealtime(false);
         setOfflineMaxNumImages(0);
-        setSelectedOcrModel('ch_v5');
+        setSelectedOcrModel('PP_v6_small');
         setIsOcrAutoInitEnabled(false);
         
         // Clear ASR
@@ -315,7 +309,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
 
         OFFLINE_MODELS.forEach(model => model.value && onDeleteModel(model.value));
         onClearSettings();
-        onSave('', 'gemini-3.5-flash-lite', '', '', ASR_MODELS[0].id, false, false, false, true, 'gemini', '', false, '', 1, 1, false, 2048, 40, 0.3, 1, false, false, 0, false, 0, 'ch_v5', false, 'whisper', 'NORMAL', 1);
+        onSave('', 'gemini-3.5-flash-lite', '', '', ASR_MODELS[0].id, false, false, false, true, 'gemini', '', false, '', 1, 1, false, 2048, 40, 0.3, 1, false, false, 0, false, 0, 'PP_v6_small', false, 'whisper', 'NORMAL', 1);
     };
 
     const handleDownloadedModelSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -747,12 +741,25 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                                     <label className={`block text-sm font-medium ${!isOfflineAsrEnabled ? 'text-gray-400' : 'text-gray-700'}`}>ASR Engine</label>
                                     <select
                                         value={asrEngine}
-                                        onChange={(e) => setAsrEngine(e.target.value as AsrEngineType)}
+                                        onChange={(e) => {
+                                            const newEngine = e.target.value as AsrEngineType;
+                                            setAsrEngine(newEngine);
+                                            if (newEngine === 'nemotron') {
+                                                setAsrModelId('nemotron');
+                                            } else if (newEngine === 'qwen3') {
+                                                setAsrModelId('qwen3');
+                                            } else if (newEngine === 'whisper') {
+                                                setAsrModelId(ASR_MODELS[0].id);
+                                            }
+                                        }}
                                         disabled={!isOfflineAsrEnabled}
                                         className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md"
                                     >
-                                        <option value="whisper">Transformers.js Whisper</option>
-                                        <option value="nemotron">Nemotron-ASR (onnxruntime-web)</option>
+                                        {ASR_MODELS_RUNTIME.map((m) => (
+                                            <option key={m.id} value={m.engine}>
+                                                {m.name}
+                                            </option>
+                                        ))}
                                     </select>
                                 </div>
                                 {asrEngine === 'whisper' && (
@@ -862,6 +869,48 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                                                 <option value="5">5</option>
                                             </select>
                                         </div>
+                                    </div>
+                                )}
+                                {asrEngine === 'qwen3' && (
+                                    <div className="space-y-4 p-4 border border-gray-200 rounded-lg bg-gray-50">
+                                        <div className="flex items-center justify-between mb-2">
+                                            <div>
+                                                <div className="text-sm font-medium text-gray-800">
+                                                    Qwen3-ASR-0.6B-ONNX
+                                                </div>
+                                                <div className="text-xs text-gray-500">
+                                                    Auto WebGPU shader-f16: q4f16 (~888MB) / q4 (~1.29GB)
+                                                </div>
+                                            </div>
+                                            <div className="flex items-center space-x-3">
+                                                {!(isAsrInitializing && asrEngine === 'qwen3') && (
+                                                    asrModelsCacheStatus['qwen3'] ? (
+                                                        <span className="text-sm font-medium text-green-600">{t('settings.modelCached') || 'Cached'}</span>
+                                                    ) : (
+                                                        <button
+                                                            onClick={() => onDownloadAsrModel('qwen3')}
+                                                            disabled={isAsrInitializing || !isOfflineAsrEnabled}
+                                                            className="text-sm font-medium text-blue-600 hover:text-blue-800 disabled:text-gray-400 disabled:cursor-not-allowed"
+                                                        >
+                                                            {t('settings.modelDownload') || 'Download'}
+                                                        </button>
+                                                    )
+                                                )}
+                                            </div>
+                                        </div>
+                                        {isAsrInitializing && asrEngine === 'qwen3' && (
+                                            <div className="space-y-1">
+                                                <div className="pt-1 text-center text-sm text-blue-600 font-medium">
+                                                    {asrLoadingProgress.file} ({Math.round(asrLoadingProgress.progress)}%)
+                                                </div>
+                                                <div className="w-full bg-gray-200 rounded-full h-2">
+                                                    <div
+                                                        className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                                                        style={{ width: `${Math.min(100, Math.max(0, asrLoadingProgress.progress))}%` }}
+                                                    />
+                                                </div>
+                                            </div>
+                                        )}
                                     </div>
                                 )}
                                 <div>
