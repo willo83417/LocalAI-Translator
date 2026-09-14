@@ -4,6 +4,7 @@ if (typeof (globalThis as any).SharedArrayBuffer === 'undefined') {
 }
 
 import { AsrEngine } from "@jeffpeng3/nemotron-asr-core";
+import { toTraditionalChinese, isTraditionalChinese } from '../utils/chineseConverter';
 
 interface WorkerMessage {
     type: 'load' | 'transcribe' | 'unload' | 'cancel';
@@ -122,7 +123,8 @@ class NemotronTranscriber {
 
         this.isProcessing = true;
         this.abortCurrent = false;
-        const { audioData, asrLanguage, isFinal } = this.processingQueue.shift()!;
+        const { audioData, asrLanguage, promptLanguage, isFinal } = this.processingQueue.shift()!;
+        const shouldConvertToTraditional = isTraditionalChinese(promptLanguage) || isTraditionalChinese(asrLanguage);
 
         try {
             let langId = 101;
@@ -170,11 +172,14 @@ class NemotronTranscriber {
                 this.accumulatedText = '';
                 
                 if (!this.abortCurrent) {
-                    post({ type: 'transcription', payload: { text: finalResult?.text || '', isFinal: true } });
+                    const rawFinal = finalResult?.text || '';
+                    const finalText = shouldConvertToTraditional ? toTraditionalChinese(rawFinal) : rawFinal;
+                    post({ type: 'transcription', payload: { text: finalText, isFinal: true } });
                 }
             } else {
                 if (!this.abortCurrent) {
-                    post({ type: 'transcription-partial', payload: this.accumulatedText });
+                    const outputPartial = shouldConvertToTraditional ? toTraditionalChinese(this.accumulatedText) : this.accumulatedText;
+                    post({ type: 'transcription-partial', payload: outputPartial });
                 }
             }
         } catch (error) {
