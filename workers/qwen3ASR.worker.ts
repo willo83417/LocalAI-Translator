@@ -585,6 +585,8 @@ class Qwen3AsrEngine {
             // Setup ONNX Runtime Web
             ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.29.0/dist/';
 			ort.env.webgpu.powerPreference = 'high-performance';
+            ort.env.debug = false;
+			ort.env.logLevel = 'error';
 
             post({ type: 'progress', payload: { status: 'progress', file: 'Creating WebGPU Inference Sessions...', progress: 97 } });
 
@@ -761,18 +763,27 @@ class Qwen3AsrEngine {
 
         // 7. Autoregressive Greedy Generation Loop
         try {
+            // Pre-allocate step buffers to avoid GC pressure and repeated allocations per token
+            const stepRow = new Float32Array(this.hidden);
+            const posBigArray = new BigInt64Array(1);
+
             while (!this.eos.has(nextToken) && generatedIds.length < maxTokens) {
-                const stepRow = new Float32Array(this.hidden);
                 this.embedRowInto(nextToken, stepRow, 0);
+                posBigArray[0] = BigInt(pos);
+
+                const stepEmbedsTensor = makeEmbTensor(stepRow, stepEmbType, [1, 1, this.hidden]);
+                const stepPosTensor = new ort.Tensor('int64', posBigArray, [1, 1]);
 
                 const stepOut = await this.decoderStepSession!.run({
-                    input_embeds: makeEmbTensor(stepRow, stepEmbType, [1, 1, this.hidden]),
-                    position_ids: makePosTensor(pos, 1),
+                    input_embeds: stepEmbedsTensor,
+                    position_ids: stepPosTensor,
                     past_keys: pastK,
                     past_values: pastV,
                 });
 
-                // Dispose previous step's GPU buffers immediately to prevent memory growth!
+                // Dispose step input tensors and previous step's KV GPU buffers immediately to prevent memory growth
+                stepEmbedsTensor.dispose?.();
+                stepPosTensor.dispose?.();
                 pastK.dispose?.();
                 pastV.dispose?.();
 
