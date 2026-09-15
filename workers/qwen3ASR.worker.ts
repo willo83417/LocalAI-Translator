@@ -584,6 +584,7 @@ class Qwen3AsrEngine {
 
             // Setup ONNX Runtime Web
             ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.29.0/dist/';
+			ort.env.webgpu.powerPreference = 'high-performance';
 
             post({ type: 'progress', payload: { status: 'progress', file: 'Creating WebGPU Inference Sessions...', progress: 97 } });
 
