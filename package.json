@@ -12,7 +12,7 @@
   "dependencies": {
     "@fluidinference/fluidvad": "^0.2.0",
     "@google/genai": "^1.48.0",
-    "@huggingface/transformers": "^4.2.0",
+    "@huggingface/transformers": "^4.3.0",
     "@jeffpeng3/nemotron-asr-core": "^0.2.3",
     "@litert-lm/core": "^0.17.0",
     "@mediapipe/tasks-genai": "1.0.1-rc.20260805",
@@ -22,7 +22,7 @@
     "i18next-browser-languagedetector": "^8.0.0",
     "idb": "^8.0.3",
     "lucide-react": "^1.45.0",
-    "onnxruntime-web": "^1.29.0",
+    "onnxruntime-web": "^1.30.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-i18next": "^15.0.0",

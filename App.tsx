@@ -991,9 +991,9 @@ const App: React.FC = () => {
     useEffect(() => {
         const fetchStatuses = async () => {
             const statuses: Record<string, DownloadProgress> = {};
-            for (const model of OFFLINE_MODELS) {
+            for (const model of [...OFFLINE_MODELS, ...OFFLINE_MODELS_TS]) {
                 if (model.value) {
-                     statuses[model.value] = await downloadManager.getStatus(model.value);
+                     statuses[model.value] = await downloadManager.getStatus(model.value, (model as any).dtype);
                 }
             }
             setDownloadProgress(statuses);
@@ -1220,13 +1220,19 @@ const App: React.FC = () => {
             
             if (isTSModel) {
                  const model = OFFLINE_MODELS_TS.find(m => m.value === modelToLoad);
-                 const options = {
-                     maxTokens: offlineMaxTokens, topK: offlineTopK, temperature: offlineTemperature,
-                     randomSeed: offlineRandomSeed, supportAudio: offlineSupportAudio, audioRealtime: offlineAudioRealtime, maxNumImages: offlineMaxNumImages,
-                     dtype: model?.dtype || 'q4',
-                     generationMode: model?.generationMode || 'Gemma4ForConditionalGeneration'
-                 };
-                 getOrCreateWorker().postMessage({ type: 'init', payload: { engine: 'transformers', modelSource: modelToLoad, options } });
+                 downloadManager.resolveDtypeForModel(modelToLoad, model?.dtype || 'q4').then(resolvedDtype => {
+                     const options = {
+                         maxTokens: offlineMaxTokens, topK: offlineTopK, temperature: offlineTemperature,
+                         randomSeed: offlineRandomSeed, supportAudio: offlineSupportAudio, audioRealtime: offlineAudioRealtime, maxNumImages: offlineMaxNumImages,
+                         dtype: resolvedDtype,
+                         generationMode: model?.generationMode || 'Gemma4ForConditionalGeneration'
+                     };
+                     getOrCreateWorker().postMessage({ type: 'init', payload: { engine: 'transformers', modelSource: modelToLoad, options } });
+                 }).catch(err => {
+                     const message = err instanceof Error ? err.message : t('notifications.offlineModelInitFailed');
+                     showNotification(message, 'error');
+                     setIsOfflineModelInitializing(false);
+                 });
             } else {
                  downloadManager.getModelAsBlob(modelToLoad).then(modelBlob => {
                     if (!modelBlob) throw new Error(`Model blob for ${modelToLoad} not found.`);
@@ -2237,21 +2243,29 @@ const App: React.FC = () => {
         setDownloadProgress(prev => ({ ...prev, [modelName]: progress }));
     }, []);
 
-    const handleStartDownload = useCallback((modelName: string, url: string, isTSModel?: boolean, dtype?: string) => {
+    const handleStartDownload = useCallback((modelName: string, url: string, isTSModel?: boolean, dtype?: string | Record<string, string>) => {
         if (isTSModel && dtype) {
-            downloadManager.startTSModelDownload(modelName, dtype, huggingFaceApiKey, (p) => updateProgress(modelName, p));
+            downloadManager.startTSModelDownload(modelName, dtype, huggingFaceApiKey, (p) => updateProgress(modelName, p))
+                .catch((err: any) => {
+                    const message = err?.message || 'Download failed';
+                    showNotification(message, 'error');
+                });
         } else {
             downloadManager.startDownload(modelName, url, huggingFaceApiKey, (p) => updateProgress(modelName, p));
         }
-    }, [huggingFaceApiKey, updateProgress]);
+    }, [huggingFaceApiKey, updateProgress, showNotification]);
 
-    const handleResumeDownload = useCallback((modelName: string, url: string, isTSModel?: boolean, dtype?: string) => {
+    const handleResumeDownload = useCallback((modelName: string, url: string, isTSModel?: boolean, dtype?: string | Record<string, string>) => {
         if (isTSModel && dtype) {
-             downloadManager.startTSModelDownload(modelName, dtype, huggingFaceApiKey, (p) => updateProgress(modelName, p));
+             downloadManager.startTSModelDownload(modelName, dtype, huggingFaceApiKey, (p) => updateProgress(modelName, p))
+                .catch((err: any) => {
+                    const message = err?.message || 'Download failed';
+                    showNotification(message, 'error');
+                });
         } else {
              downloadManager.resumeDownload(modelName, url, huggingFaceApiKey, (p) => updateProgress(modelName, p));
         }
-    }, [huggingFaceApiKey, updateProgress]);
+    }, [huggingFaceApiKey, updateProgress, showNotification]);
     
     const handlePauseDownload = useCallback((modelName: string) => {
         downloadManager.pauseDownload(modelName);

@@ -50,8 +50,8 @@ interface SettingsModalProps {
     currentIsOfflineModeEnabled: boolean;
     currentIsTwoStepJpCnEnabled: boolean;
     downloadProgress: Record<string, DownloadProgress>;
-    onStartDownload: (modelName: string, url: string, isTSModel?: boolean, dtype?: string) => void;
-    onResumeDownload: (modelName: string, url: string, isTSModel?: boolean, dtype?: string) => void;
+    onStartDownload: (modelName: string, url: string, isTSModel?: boolean, dtype?: string | Record<string, string>) => void;
+    onResumeDownload: (modelName: string, url: string, isTSModel?: boolean, dtype?: string | Record<string, string>) => void;
     onPauseDownload: (modelName: string) => void;
     onDeleteModel: (modelName: string) => void;
     isOfflineModelInitializing: boolean;

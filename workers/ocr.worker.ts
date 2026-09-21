@@ -158,7 +158,7 @@ self.onmessage = async (e: MessageEvent<any>) => {
                 // Configure ONNX Runtime inside worker
                 ortInstance.env.wasm.numThreads = 0;
                 ortInstance.env.wasm.simd = true;
-                ortInstance.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.29.0/dist/';
+                ortInstance.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/';
                 
                 // Set OCR environment for Worker (OffscreenCanvas)
                 (ocr as any).setOCREnv({

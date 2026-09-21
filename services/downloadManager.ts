@@ -1,5 +1,6 @@
 // services/downloadManager.ts
 import { openDB, IDBPDatabase } from 'idb';
+import { ModelRegistry } from '@huggingface/transformers';
 
 const DB_NAME = 'offline-model-db';
 const CHUNKS_STORE = 'model-chunks';
@@ -17,6 +18,33 @@ export interface DownloadProgress {
     error?: string;
 }
 
+let cachedShaderF16Support: boolean | null = null;
+
+/**
+ * 檢測當前瀏覽器與設備 WebGPU 是否支援 shader-f16 (半精度 16-bit 浮點數著色器運算)
+ */
+export async function checkShaderF16Support(): Promise<boolean> {
+    if (cachedShaderF16Support !== null) {
+        return cachedShaderF16Support;
+    }
+    if (typeof navigator === 'undefined' || !('gpu' in navigator) || !navigator.gpu) {
+        cachedShaderF16Support = false;
+        return false;
+    }
+    try {
+        const adapter = await navigator.gpu.requestAdapter();
+        if (!adapter) {
+            cachedShaderF16Support = false;
+            return false;
+        }
+        cachedShaderF16Support = adapter.features.has('shader-f16');
+        return cachedShaderF16Support;
+    } catch (e) {
+        console.warn('[DownloadManager] Error checking WebGPU shader-f16 support:', e);
+        cachedShaderF16Support = false;
+        return false;
+    }
+}
 
 class DownloadManager {
     private dbPromise: Promise<IDBPDatabase>;
@@ -57,87 +85,231 @@ class DownloadManager {
         return this.opfsRootPromise;
     }
 
-    async startTSModelDownload(modelName: string, dtype: string, hfApiKey: string, onProgress: (progress: DownloadProgress) => void): Promise<void> {
+    /**
+     * 依據設備 WebGPU shader-f16 支援能力，解析實際可用的 dtype：
+     * 1. 若支援 shader-f16：保留原設定 (如 q4f16, q2f16, fp16 等)
+     * 2. 若不支援：
+     *    - Gemma QAT 模型 (Gemma-4-E2B-it-qat, Gemma-4-E4B-it-qat) 僅支援 f16，彈出警告並拒絕下載
+     *    - 其他模型 (如 Gemma-4-E2B-it, Qwen3.5-4B 等) 若指定了含有 f16 的量化，自動降級為 q4 確保正常執行
+     */
+    async resolveDtypeForModel(
+        modelName: string, 
+        dtype: string | Record<string, string>
+    ): Promise<string | Record<string, string>> {
+        const supportsF16 = await checkShaderF16Support();
+        const isQatModel = modelName.toLowerCase().includes('qat');
+
+        if (!supportsF16) {
+            if (isQatModel) {
+                const warningMsg = `此裝置的 WebGPU 不支援「shader-f16」(半精度浮點運算)。模型「${modelName}」僅支援 f16 量化，無法在此裝置上下載與運行。`;
+                try {
+                    if (typeof window !== 'undefined' && typeof window.alert === 'function') {
+                        window.alert(warningMsg);
+                    }
+                } catch (_) {}
+                throw new Error(warningMsg);
+            }
+
+            // 一般模型降級為基礎 q4，以保證可以在無 shader-f16 設備上執行
+            if (typeof dtype === 'string') {
+                if (dtype.includes('f16')) {
+                    console.info(`[DownloadManager] WebGPU shader-f16 not supported. Falling back dtype from '${dtype}' to 'q4' for ${modelName}.`);
+                    return 'q4';
+                }
+            } else if (dtype && typeof dtype === 'object') {
+                console.info(`[DownloadManager] WebGPU shader-f16 not supported. Falling back composite dtype to 'q4' for ${modelName}.`);
+                return 'q4';
+            }
+        }
+
+        return dtype;
+    }
+
+    async startTSModelDownload(
+        modelName: string, 
+        dtype: string | Record<string, string>, 
+        hfApiKey: string, 
+        onProgress: (progress: DownloadProgress) => void
+    ): Promise<void> {
         if (this.controllers.has(modelName)) return;
+
+        // 下載前檢測 WebGPU shader-f16 支援度與解析實際使用的 dtype
+        let resolvedDtype: string | Record<string, string>;
+        try {
+            resolvedDtype = await this.resolveDtypeForModel(modelName, dtype);
+        } catch (checkErr: any) {
+            onProgress({ downloaded: 0, total: 0, percent: 0, status: 'error', error: checkErr.message });
+            throw checkErr;
+        }
 
         const controller = new AbortController();
         this.controllers.set(modelName, controller);
         
         try {
             onProgress({ downloaded: 0, total: 0, percent: 0, status: 'downloading' });
-            
-            const urls: string[] = [];
-            const rootRes = await fetch(`https://huggingface.co/api/models/${modelName}/tree/main`, { signal: controller.signal });
-            if (!rootRes.ok) throw new Error('Failed to fetch model tree');
-            const rootFiles = await rootRes.json();
-            for (const f of rootFiles) {
-                if (f.path.endsWith('.json')) urls.push(`https://huggingface.co/${modelName}/resolve/main/${f.path}`);
-            }
 
-            const onnxRes = await fetch(`https://huggingface.co/api/models/${modelName}/tree/main/onnx`, { signal: controller.signal });
-            if (!onnxRes.ok) throw new Error('Failed to fetch onnx tree');
-            const onnxFiles = await onnxRes.json();
-            for (const f of onnxFiles) {
-                if (f.path.includes(`_${dtype}.onnx`)) {
-                    urls.push(`https://huggingface.co/${modelName}/resolve/main/${f.path}`);
+            const targetFiles = new Set<string>();
+
+            // 1. 使用 Transformers.js ModelRegistry.get_files 解析核心檔案與 ONNX 外部權重分片 (.onnx_data, .onnx_data_1 等)
+            try {
+                const registryFiles = await ModelRegistry.get_files(modelName, { dtype: resolvedDtype as any });
+                if (Array.isArray(registryFiles)) {
+                    for (const f of registryFiles) {
+                        targetFiles.add(f);
+                    }
                 }
+            } catch (regErr) {
+                console.warn(`[DownloadManager] ModelRegistry.get_files failed for ${modelName}:`, regErr);
             }
 
-            let grandTotal = 0;
-            for(const f of rootFiles) {
-                 if (f.path.endsWith('.json')) grandTotal += f.size || 0;
+            // 2. 透過 Hugging Face Tree API 獲取遠端結構，確保所有配置與模板 (chat_template.jinja, processor_config.json 等)
+            const authHeaders: Record<string, string> = hfApiKey ? { Authorization: `Bearer ${hfApiKey}` } : {};
+
+            try {
+                const rootRes = await fetch(`https://huggingface.co/api/models/${modelName}/tree/main`, { 
+                    headers: authHeaders, 
+                    signal: controller.signal 
+                });
+                if (rootRes.ok) {
+                    const rootFiles = await rootRes.json();
+                    for (const f of rootFiles) {
+                        // 包含 json, jinja, txt 等元資料檔案
+                        if (f.path.endsWith('.json') || f.path.endsWith('.jinja') || f.path.endsWith('.txt')) {
+                            targetFiles.add(f.path);
+                        }
+                    }
+                }
+
+                // 檢查 onnx 目錄，補足當前 dtype 的所有 ONNX 模型與 .onnx_data 權重分片
+                const onnxRes = await fetch(`https://huggingface.co/api/models/${modelName}/tree/main/onnx`, { 
+                    headers: authHeaders, 
+                    signal: controller.signal 
+                });
+                if (onnxRes.ok) {
+                    const onnxFiles = await onnxRes.json();
+                    const dtypes = typeof resolvedDtype === 'string' ? [resolvedDtype] : Object.values(resolvedDtype);
+                    for (const f of onnxFiles) {
+                        const matchesDtype = dtypes.some(dt => f.path.includes(`_${dt}.onnx`) || f.path.includes(`_${dt}.onnx_data`));
+                        if (matchesDtype) {
+                            targetFiles.add(`onnx/${f.path}`);
+                        }
+                    }
+                }
+            } catch (treeErr) {
+                console.warn(`[DownloadManager] HF Tree API fetch failed, proceeding with known registry files:`, treeErr);
             }
-            for(const f of onnxFiles) {
-                 if (f.path.includes(`_${dtype}.onnx`)) grandTotal += f.size || 0;
+
+            // 3. 確保 Gemma / Qwen 等關鍵配置檔案至少進入候選測試清單
+            const essentialCandidates = [
+                'config.json',
+                'generation_config.json',
+                'tokenizer.json',
+                'tokenizer_config.json',
+                'chat_template.jinja',
+                'processor_config.json',
+                'preprocessor_config.json'
+            ];
+            for (const item of essentialCandidates) {
+                targetFiles.add(item);
             }
-            
-            let grandDownloaded = 0;
+
             const cache = await caches.open('transformers-cache');
+            const fileList = Array.from(targetFiles);
+            const fileEntries: { url: string; size: number; cached: boolean }[] = [];
 
-            for (const url of urls) {
-                let fileSize = 0;
-                const headRes = await fetch(url, { method: 'HEAD', signal: controller.signal }).catch(()=>null);
-                if (headRes && headRes.ok) fileSize = parseInt(headRes.headers.get('content-length') || '0', 10);
+            // 4. 解析各檔案大小與快取狀態
+            for (const filePath of fileList) {
+                const url = `https://huggingface.co/${modelName}/resolve/main/${filePath}`;
 
+                // 檢查快取
                 const cachedRes = await cache.match(url);
                 if (cachedRes) {
-                    const cachedSize = parseInt(cachedRes.headers.get('content-length') || '0', 10);
-                    if (cachedSize === fileSize && fileSize > 0) {
-                        grandDownloaded += fileSize;
-                        onProgress({ downloaded: grandDownloaded, total: grandTotal, percent: (grandDownloaded/grandTotal)*100, status: 'downloading' });
+                    const cachedLength = parseInt(cachedRes.headers.get('content-length') || '0', 10);
+                    if (cachedLength > 0) {
+                        fileEntries.push({ url, size: cachedLength, cached: true });
                         continue;
                     }
                 }
 
-                const response = await fetch(url, { signal: controller.signal });
-                if (!response.ok || !response.body) throw new Error(`Failed to fetch ${url}`);
+                // 檢查遠端是否存在以及大小 (HEAD request)
+                try {
+                    const headRes = await fetch(url, { 
+                        method: 'HEAD', 
+                        headers: authHeaders, 
+                        signal: controller.signal 
+                    });
+                    if (headRes.ok) {
+                        const size = parseInt(headRes.headers.get('content-length') || '0', 10);
+                        fileEntries.push({ url, size, cached: false });
+                    }
+                } catch {
+                    // 若 HEAD 失敗或不存在，略過此候選檔案
+                }
+            }
 
+            let grandTotal = fileEntries.reduce((sum, item) => sum + item.size, 0);
+            let grandDownloaded = fileEntries.filter(i => i.cached).reduce((sum, item) => sum + item.size, 0);
+
+            if (grandTotal === 0 && fileEntries.length > 0) {
+                grandTotal = fileEntries.length * 1024 * 1024;
+            }
+
+            onProgress({ 
+                downloaded: grandDownloaded, 
+                total: grandTotal, 
+                percent: grandTotal > 0 ? (grandDownloaded / grandTotal) * 100 : 0, 
+                status: 'downloading' 
+            });
+
+            // 5. 進行下載並存入 Cache API (包含 content-length header)
+            for (const fileEntry of fileEntries) {
+                if (fileEntry.cached) continue;
+
+                const response = await fetch(fileEntry.url, { 
+                    headers: authHeaders, 
+                    signal: controller.signal 
+                });
+                if (!response.ok || !response.body) {
+                    console.warn(`[DownloadManager] Failed to fetch ${fileEntry.url}, status: ${response.status}`);
+                    continue;
+                }
+
+                const contentLengthHeader = response.headers.get('content-length');
+                const realSize = contentLengthHeader ? parseInt(contentLengthHeader, 10) : fileEntry.size;
                 const reader = response.body.getReader();
                 const headers = new Headers(response.headers);
+                if (!headers.has('content-length') && realSize > 0) {
+                    headers.set('content-length', realSize.toString());
+                }
 
                 const stream = new ReadableStream({
                     async start(ctrl) {
-                        while(true) {
+                        while (true) {
                             const { done, value } = await reader.read();
                             if (done) {
                                 ctrl.close();
                                 break;
                             }
                             grandDownloaded += value.length;
-                            onProgress({ downloaded: grandDownloaded, total: grandTotal, percent: (grandDownloaded/grandTotal)*100, status: 'downloading' });
+                            onProgress({ 
+                                downloaded: grandDownloaded, 
+                                total: grandTotal, 
+                                percent: grandTotal > 0 ? Math.min(99.9, (grandDownloaded / grandTotal) * 100) : 0, 
+                                status: 'downloading' 
+                            });
                             ctrl.enqueue(value);
                         }
                     }
                 });
 
                 const streamResponse = new Response(stream, { headers });
-                await cache.put(url, streamResponse);
+                await cache.put(fileEntry.url, streamResponse);
             }
             
             const db = await this.getDb();
             await db.put(META_STORE, { modelName, total: grandTotal, status: 'completed' });
             onProgress({ downloaded: grandTotal, total: grandTotal, percent: 100, status: 'completed' });
-            console.log(`TS Model ${modelName} pre-download completed successfully using Cache API.`);
+            //console.log(`TS Model ${modelName} pre-download completed successfully using ModelRegistry & Cache API.`);
             
         } catch (error: any) {
             console.error('Download error:', error);
@@ -469,17 +641,62 @@ class DownloadManager {
         await this._deleteChunks(modelName);
     }
 
-    async getStatus(modelName: string): Promise<DownloadProgress> {
+    async checkTSModelCached(modelName: string, dtype: string | Record<string, string> = 'q4'): Promise<boolean> {
+        try {
+            const resolvedDtype = await this.resolveDtypeForModel(modelName, dtype).catch(() => dtype);
+
+            // 1. 優先使用 Transformers.js 官方 ModelRegistry.is_cached 判定
+            const cachedByRegistry = await ModelRegistry.is_cached(modelName, { dtype: resolvedDtype as any }).catch(() => null);
+            if (cachedByRegistry === true) {
+                return true;
+            }
+
+            // 2. 次選檢查 Cache API ('transformers-cache') 中的關鍵設定檔
+            const cache = await caches.open('transformers-cache');
+            const keys = await cache.keys();
+            const urls = keys.map(k => k.url);
+
+            const hasConfig = urls.some(u => u.includes(modelName) && u.endsWith('config.json'));
+            const hasTokenizer = urls.some(u => u.includes(modelName) && (u.endsWith('tokenizer.json') || u.endsWith('tokenizer_config.json')));
+            const hasOnnx = urls.some(u => u.includes(modelName) && u.includes('.onnx'));
+
+            return hasConfig && hasTokenizer && hasOnnx;
+        } catch (err) {
+            console.error(`Error checking TS model cache for ${modelName}:`, err);
+            return false;
+        }
+    }
+
+    async getStatus(modelName: string, dtype?: string | Record<string, string>): Promise<DownloadProgress> {
         const db = await this.getDb();
         const meta = await db.get(META_STORE, modelName);
     
         if (!meta) {
+            // 對於 TS 模型，若 META_STORE 無記錄，檢查 Cache API 是否早已下載過
+            if (modelName.includes('/')) {
+                const isCached = await this.checkTSModelCached(modelName, dtype);
+                if (isCached) {
+                    return { downloaded: 1, total: 1, percent: 100, status: 'completed' };
+                }
+            }
             return { downloaded: 0, total: 0, percent: 0, status: 'not_started' };
         }
         
         const total = meta.total || 0;
     
         if (meta.status === 'completed') {
+            // 若為 TS 模型，防禦性檢查快取是否被外部清理
+            if (modelName.includes('/')) {
+                try {
+                    const cache = await caches.open('transformers-cache');
+                    const keys = await cache.keys();
+                    const hasModelFiles = keys.some(k => k.url.includes(modelName));
+                    if (!hasModelFiles) {
+                        await db.delete(META_STORE, modelName);
+                        return { downloaded: 0, total: 0, percent: 0, status: 'not_started' };
+                    }
+                } catch { /* ignore */ }
+            }
             return { downloaded: total, total, percent: 100, status: 'completed' };
         }
 

@@ -3,7 +3,7 @@
 	 * Environment Polyfill - MUST be at the very top.
 	 * This spoofs the environment for MediaPipe's internal checks before the script is loaded.
 	 */
-	import { AutoProcessor, Qwen3_5ForConditionalGeneration, Gemma4ForConditionalGeneration, TextStreamer, RawImage, read_audio, env, DynamicCache } from '@huggingface/transformers';
+	import { AutoProcessor, AutoTokenizer, Gemma4Processor, Qwen3_5ForConditionalGeneration, Gemma4ForConditionalGeneration, TextStreamer, RawImage, read_audio, env, DynamicCache } from '@huggingface/transformers';
 
 	env.allowLocalModels = false;
     env.useWasmCache = true;    
@@ -140,6 +140,58 @@
 	let currentGenerationMode: string | null = null;
 	let imageGridThw = null; // cached image_grid_thw from initial image inputs
 
+    /**
+	* Robust and secure Chat Template processing functions:
+	* 1. Prefer tsProcessor.apply_chat_template
+	* 2. If a tokenizer is missing or an error occurs, try tsProcessor.tokenizer.apply_chat_template
+	* 3. If it still fails, automatically enable the built-in standard template fallback (supports Gemma 4, Qwen, etc.), 
+		completely avoiding the "Unable to apply chat template without a tokenizer" error.
+     */
+    const applyChatTemplateSafely = (processor: any, messages: any[], modelSource?: string | null): string => {
+        try {
+            if (processor && typeof processor.apply_chat_template === 'function' && processor.tokenizer) {
+                return processor.apply_chat_template(messages, {
+                    enable_thinking: false,
+                    add_generation_prompt: true,
+                });
+            }
+            if (processor?.tokenizer && typeof processor.tokenizer.apply_chat_template === 'function') {
+                return processor.tokenizer.apply_chat_template(messages, {
+                    enable_thinking: false,
+                    add_generation_prompt: true,
+                });
+            }
+        } catch (e: any) {
+            console.warn('[Worker] apply_chat_template failed, using fallback template formatting:', e?.message || e);
+        }
+
+        //Fallback Chat Template
+        const src = (modelSource || '').toLowerCase();
+        if (src.includes('qwen')) {
+            let formatted = '';
+            for (const msg of messages) {
+                const content = typeof msg.content === 'string' 
+                    ? msg.content 
+                    : (Array.isArray(msg.content) ? msg.content.map((c: any) => c.text || '').join('\n') : '');
+                formatted += `<|im_start|>${msg.role}\n${content}<|im_end|>\n`;
+            }
+            formatted += `<|im_start|>assistant\n`;
+            return formatted;
+        } else {
+            // Gemma 4: <bos><|turn>user\n...<end_of_turn>\n<turn|>model\n
+            let formatted = '<bos>';
+            for (const msg of messages) {
+                const role = msg.role === 'assistant' ? 'model' : msg.role;
+                const content = typeof msg.content === 'string' 
+                    ? msg.content 
+                    : (Array.isArray(msg.content) ? msg.content.map((c: any) => c.text || '').join('\n') : '');
+                formatted += `<|turn>${role}\n${content}<turn|>\n`;
+            }
+            formatted += `<|turn>model\n`;
+            return formatted;
+        }
+    };
+
 const handleInit = async (payload: any) => {
     const { modelBlob, modelSource, options } = payload;
     currentModelSource = modelSource;
@@ -160,7 +212,32 @@ const handleInit = async (payload: any) => {
         const progressCb = (info: any) => {
             self.postMessage({ type: 'download_progress', payload: { modelSource, ...info } });
         };
-        tsProcessor = await AutoProcessor.from_pretrained(modelSource, { progress_callback: progressCb });
+
+        const isGemma4 = (modelSource || '').toLowerCase().includes('gemma-4') || generationMode === 'Gemma4ForConditionalGeneration';
+
+        if (isGemma4) {
+            try {
+                // Gemma 4 優先調用專用 Gemma4Processor，避免部分社群 QAT 版本的 preprocessor_config.json 缺少 processor_class 導致 AutoProcessor 誤判為純音訊提取器
+                tsProcessor = await Gemma4Processor.from_pretrained(modelSource, { progress_callback: progressCb });
+            } catch (procErr) {
+                console.warn(`[Worker] Gemma4Processor direct load failed, falling back to AutoProcessor:`, procErr);
+                tsProcessor = await AutoProcessor.from_pretrained(modelSource, { progress_callback: progressCb });
+            }
+        } else {
+            tsProcessor = await AutoProcessor.from_pretrained(modelSource, { progress_callback: progressCb });
+        }
+
+        // 防禦性補齊：若 AutoProcessor 未能正確綁定 tokenizer，主動以 AutoTokenizer 補齊至 components
+        if (!tsProcessor.tokenizer) {
+            try {
+                console.warn(`[Worker] tsProcessor.tokenizer missing on ${modelSource}, loading fallback AutoTokenizer...`);
+                const fallbackTokenizer = await AutoTokenizer.from_pretrained(modelSource, { progress_callback: progressCb });
+                if (!tsProcessor.components) tsProcessor.components = {};
+                tsProcessor.components.tokenizer = fallbackTokenizer;
+            } catch (tokErr) {
+                console.warn('[Worker] Fallback loading AutoTokenizer failed:', tokErr);
+            }
+        }
 		
         const ModelClasses: any = {
             'Qwen3_5ForConditionalGeneration': Qwen3_5ForConditionalGeneration,
@@ -233,18 +310,16 @@ const performTranslation = async (text: string, sourceLang: string, targetLang: 
                         { role: "user", content: promptText }
                     ];
                     
-                    const prompt = tsProcessor.apply_chat_template(messages, {
-                        enable_thinking: false,
-                        add_generation_prompt: true,
-                    });
+                    const prompt = applyChatTemplateSafely(tsProcessor, messages, currentModelSource);
                     
-                    const inputs = await tsProcessor(prompt);
+                    const inputs = await (tsProcessor?.tokenizer ? tsProcessor.tokenizer(prompt) : tsProcessor(prompt));
                     
                     let generatedLength = 0;
+                    const activeTokenizer = tsProcessor?.tokenizer || tsProcessor;
                         const outputs = await tsModel.generate({
                           ...inputs,
                           ...tsGenerateOptions,
-                          streamer: new TextStreamer(tsProcessor.tokenizer, {
+                          streamer: new TextStreamer(activeTokenizer, {
                             skip_prompt: true,
                             skip_special_tokens: true,
                             callback_function: (chunk: string) => {
@@ -293,20 +368,18 @@ const handleExtractText = async (payload: any) => {
              const messages = [
                { role: "user", content: [{type: "image"}, {type: "text", text: promptText}] }
              ];
-             const prompt = tsProcessor.apply_chat_template(messages, {
-                 enable_thinking: false,
-                 add_generation_prompt: true,
-             });
+             const prompt = applyChatTemplateSafely(tsProcessor, messages, currentModelSource);
              
              const inputs = await tsProcessor(prompt, image);
              
              self.postMessage({ type: 'extract_text_start' });
              
              let fullText = "";
+             const activeTokenizer = tsProcessor?.tokenizer || tsProcessor;
              const outputs = await tsModel.generate({
                  ...inputs,
                  ...tsGenerateOptions,
-                 streamer: new TextStreamer(tsProcessor.tokenizer, {
+                 streamer: new TextStreamer(activeTokenizer, {
                      skip_prompt: true,
                      skip_special_tokens: true,
                      callback_function: (chunk: string) => {
@@ -363,19 +436,17 @@ const executeTranscribe = async (payload: any) => {
         const messages = [
                { role: "user", content: [{type: "audio"}, {type: "text", text: promptText}] }
             ];
-            const prompt = tsProcessor.apply_chat_template(messages, {
-                 enable_thinking: false,
-                 add_generation_prompt: true,
-            });
+            const prompt = applyChatTemplateSafely(tsProcessor, messages, currentModelSource);
             const inputs = await tsProcessor(prompt, null, audioDataArr);
              
             if (isStream) {
                  self.postMessage({ type: 'transcribe_start' });
                  let fullText = "";
+                 const activeTokenizer = tsProcessor?.tokenizer || tsProcessor;
                  const outputs = await tsModel.generate({
                       ...inputs,
                       ...tsGenerateOptions,
-                      streamer: new TextStreamer(tsProcessor.tokenizer, {
+                      streamer: new TextStreamer(activeTokenizer, {
                          skip_prompt: true,
                          skip_special_tokens: true,
                          callback_function: (chunk: string) => {

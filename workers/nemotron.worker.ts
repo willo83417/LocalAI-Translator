@@ -73,7 +73,7 @@ class NemotronTranscriber {
                     post({ type: 'log', payload: `Nemotron EP [${isEncoder ? 'encoder' : 'decoder'}]: ${provider} ${note || ''}` });
                 }
             }, {
-                wasmPaths:'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.29.0/dist/',
+                wasmPaths:'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/',
 				profile: profile,
                 beamWidth: beamWidth,
                 numThreads: 0

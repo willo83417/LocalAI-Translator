@@ -20,15 +20,11 @@ export const OFFLINE_MODELS = [
         name: 'Gemma-4-E2B-it (2.1 GB)', 
         value: 'gemma-4-E2B-it-web.litertlm', 
         url: 'https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it-web.litertlm'
-        //value: 'gemma-4-E2B-it-web.task',
-        //url: 'https://huggingface.co/willopcbeta/Gemma-3n-Web/resolve/main/gemma-4-E2B-it-web.task'
     },
 	{ 
         name: 'Gemma-4-E4B-it (2.9 GB)', 
         value: 'gemma-4-E4B-it-web.litertlm', 
         url: 'https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it-web.litertlm'
-        //value: 'gemma-4-E4B-it-web.task', 
-        //url: 'https://huggingface.co/willopcbeta/Gemma-3n-Web/resolve/main/gemma-4-E4B-it-web.task'
     },
     { 
         name: 'Gemma-3n-E2B (3.04 GB)', 
@@ -51,14 +47,19 @@ export const OFFLINE_MODELS_TS = [
     { 
         name: 'Gemma-4-E2B-it (3.8 GB)', 
         value: 'onnx-community/gemma-4-E2B-it-ONNX', 
-        dtype: 'q4',
+        dtype: 'q4f16',
 		generationMode: 'Gemma4ForConditionalGeneration'
-		/*dtype: {
+    },
+	{ 
+		name: 'Gemma-4-E2B-it-qat (2.6 GB)',
+		value: 'onnx-community/gemma-4-E2B-it-qat-mobile-ONNX',
+		generationMode: 'Gemma4ForConditionalGeneration',
+		dtype: {
 			embed_tokens: "q2f16",
 			vision_encoder: "fp16",
 			decoder_model_merged: "q2f16",
 			audio_encoder: "q2f16"
-		},*/
+		},
     },
     { 
         name: 'Gemma-4-E4B-it (4.5 GB)', 
@@ -66,11 +67,22 @@ export const OFFLINE_MODELS_TS = [
         dtype: 'q4',
 		generationMode: 'Gemma4ForConditionalGeneration'
     },
+    { 
+        name: 'Gemma-4-E4B-it-qat (3.6 GB)', 
+        value: 'onnx-community/gemma-4-E4B-it-qat-mobile-ONNX', 
+		generationMode: 'Gemma4ForConditionalGeneration',
+		dtype: {
+			embed_tokens: "q2f16",
+			vision_encoder: "fp16",
+			decoder_model_merged: "q2f16",
+			audio_encoder: "q2f16"
+		},
+    },
 	{ 
         name: 'Qwen3.5-4B (3.11 GB)', 
         value: 'onnx-community/Qwen3.5-4B-ONNX-OPT', 
-        dtype: 'q4',
-		generationMode: 'Qwen3_5ForConditionalGeneration'
+        dtype: 'q4f16',
+        generationMode: 'Qwen3_5ForConditionalGeneration'
     },
 ];
 
@@ -80,7 +92,7 @@ export const ASR_MODELS: AsrModel[] = [
         name: 'lite-whisper-large-v3-turbo',
         quantization: {
             encoder_model: 'q4',
-            decoder_model_merged: 'q4f16',
+            decoder_model_merged: 'q4',
         },
         size: '~590 MB'
     },
@@ -116,7 +128,7 @@ export const ASR_MODELS: AsrModel[] = [
         name: 'Whisper Base',
         quantization: {
             encoder_model: 'f32',
-            decoder_model_merged: 'f32',  //decoder_model_with_past: 'q4'
+            decoder_model_merged: 'f32',  
         },
         size: '~150 MB'
     }
