@@ -118,14 +118,17 @@ class Transcriber {
             return;
         }
 
-        // Always keep only final requests in the queue, drop previous non-final ones
-        // because the new request (whether final or non-final) contains the latest accumulated audio.
-        this.processingQueue = this.processingQueue.filter(req => req.isFinal);
-
-        // If we are currently processing a non-final request, we can try to abort it
-        // so we can process the new request faster.
-        if (this.isProcessing && !this.currentProcessingIsFinal) {
-             this.abortCurrent = true;
+        if (isFinal) {
+            // If we are currently processing a non-final request, abort it so we can process the final request immediately
+            if (this.isProcessing && !this.currentProcessingIsFinal) {
+                this.abortCurrent = true;
+                this.stoppingCriteria.interrupt();
+            }
+            // Clear any pending non-final requests from the queue to process final audio right away
+            this.processingQueue = this.processingQueue.filter(item => item.isFinal);
+        } else {
+            // For realtime preview, discard older pending interim requests to prevent queue lag
+            this.processingQueue = this.processingQueue.filter(item => item.isFinal);
         }
 
         this.processingQueue.push({ audioData, asrLanguage, promptLanguage, isFinal });
@@ -143,49 +146,57 @@ class Transcriber {
         const { audioData, asrLanguage, promptLanguage, isFinal } = this.processingQueue.shift()!;
         this.currentProcessingIsFinal = isFinal;
 
-        post({ type: 'log', payload: `Starting transcription (ASR Lang: ${asrLanguage}, Prompt Lang: ${promptLanguage})...` });
+        // Skip realtime processing if audio is too short (< 0.6s at 16kHz = 9600 samples)
+        // Whisper with less than 0.6s audio cannot reliably infer tokens and produces hallucinations.
+        if (!isFinal && audioData.length < 9600) {
+            this.isProcessing = false;
+            this.processQueue();
+            return;
+        }
+
+        post({ type: 'log', payload: `Starting transcription (ASR Lang: ${asrLanguage}, Prompt Lang: ${promptLanguage}, isFinal: ${isFinal})...` });
 
         try {
             const tokenizer = this.transcriber.tokenizer;
             const shouldConvertToTraditional = isTraditionalChinese(promptLanguage) || isTraditionalChinese(asrLanguage);
             let fullTranscription = "";
 
-            // Use TextStreamer to capture partial results.
-            // We accumulate the chunks locally because App.tsx replaces the input text entirely.
-            const streamer = new TextStreamer(tokenizer, {
-                skip_prompt: true,
-                skip_special_tokens: true,
-                callback_function: (text: string) => {
-                    if (this.abortCurrent || this.stoppingCriteria.interrupted) {
-                        throw new Error('ABORTED');
-                    }
-                    fullTranscription += text;
-                    const outputPartial = shouldConvertToTraditional ? toTraditionalChinese(fullTranscription) : fullTranscription;
-                    post({ type: 'transcription-partial', payload: outputPartial });
-                }
-            });
-
             const generationOptions: any = {
                 language: asrLanguage?.startsWith('zh') ? 'chinese' : (asrLanguage === 'auto' ? undefined : asrLanguage),
                 task: 'transcribe',
-                temperature: 0.3,
-                streamer: streamer, // Pass the streamer to generate configuration
+                temperature: 0.0, // Greedy decoding produces deterministic results and drastically suppresses hallucinations
+                repetition_penalty: 1.2, // Penalize repeating loops on incomplete audio
+                condition_on_previous_text: false, // Prevents partial hallucinations from conditioning subsequent output
                 stopping_criteria: new StoppingCriteriaList([this.stoppingCriteria]),
                 chunk_length_s: 30, // Limits memory scaling and improves continuous long-form decoding
                 stride_length_s: 5, // Adds overlap between chunks to prevent word-cutting boundaries
             };
-    
-            // Use the specific promptLanguage code to look up the correct prompt.
-            const promptText = PROMPT_MAP[promptLanguage];
-            if (promptText) {
-                post({ type: 'log', payload: `Applying prompt for ${promptLanguage}: "${promptText}"` });
-    
-                const { input_ids } = await this.transcriber.tokenizer(promptText);
-                
-                // Remove the final token which is typically an EOS token.
-                generationOptions.prompt_ids = input_ids.data.slice(0, -1);
+
+            if (isFinal) {
+                // Use TextStreamer for final audio processing
+                const streamer = new TextStreamer(tokenizer, {
+                    skip_prompt: true,
+                    skip_special_tokens: true,
+                    callback_function: (text: string) => {
+                        if (this.abortCurrent || this.stoppingCriteria.interrupted) {
+                            throw new Error('ABORTED');
+                        }
+                        fullTranscription += text;
+                        const outputPartial = shouldConvertToTraditional ? toTraditionalChinese(fullTranscription) : fullTranscription;
+                        post({ type: 'transcription-partial', payload: outputPartial });
+                    }
+                });
+                generationOptions.streamer = streamer;
+
+                // Use the specific promptLanguage code to look up the correct prompt for final transcription
+                const promptText = PROMPT_MAP[promptLanguage];
+                if (promptText) {
+                    post({ type: 'log', payload: `Applying prompt for ${promptLanguage}: "${promptText}"` });
+                    const { input_ids } = await this.transcriber.tokenizer(promptText);
+                    generationOptions.prompt_ids = input_ids.data.slice(0, -1);
+                }
             }
-            
+
             const output = await this.transcriber(audioData, generationOptions);
             
             if (this.abortCurrent || this.stoppingCriteria.interrupted) {

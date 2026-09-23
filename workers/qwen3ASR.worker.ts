@@ -406,6 +406,8 @@ class Qwen3AsrEngine {
 
     private isLoading = false;
     private isProcessing = false;
+    private abortCurrent = false;
+    private currentProcessingIsFinal = false;
 
     async checkShaderF16Support(): Promise<boolean> {
         try {
@@ -673,21 +675,35 @@ class Qwen3AsrEngine {
             return;
         }
 
+        // If audio is too short (< 0.6s at 16kHz) and not final, skip to avoid hallucinations
+        if (!isFinal && audio.length < 9600) {
+            return;
+        }
+
         if (this.isProcessing) {
             if (!isFinal) return; // Skip non-final frames if already busy
+            // If final request arrived while non-final is processing, abort the non-final generation immediately!
+            if (!this.currentProcessingIsFinal) {
+                this.abortCurrent = true;
+            }
             while (this.isProcessing) {
-                await new Promise((res) => setTimeout(res, 20));
+                await new Promise((res) => setTimeout(res, 10));
             }
         }
 
         this.isProcessing = true;
+        this.abortCurrent = false;
+        this.currentProcessingIsFinal = isFinal;
         try {
             await this.transcribeAudioInternal(audio, asrLanguage, promptLanguage, false, isFinal);
         } catch (err: any) {
-            console.error('[Qwen3 ASR Transcribe Error]:', err);
-            post({ type: 'error', payload: `Transcription error: ${err?.message || err}` });
+            if (err?.message !== 'ABORTED') {
+                console.error('[Qwen3 ASR Transcribe Error]:', err);
+                post({ type: 'error', payload: `Transcription error: ${err?.message || err}` });
+            }
         } finally {
             this.isProcessing = false;
+            this.abortCurrent = false;
         }
     }
 
@@ -759,7 +775,7 @@ class Qwen3AsrEngine {
         let pastK = initOut.present_keys as ort.Tensor;
         let pastV = initOut.present_values as ort.Tensor;
         let pos = promptLen;
-        const maxTokens = Math.min(256, this.cfg!.prompt.max_new_tokens || 256);
+        const maxTokens = isFinal ? Math.min(256, this.cfg!.prompt.max_new_tokens || 256) : 64;
 
         // 7. Autoregressive Greedy Generation Loop
         try {
@@ -768,6 +784,9 @@ class Qwen3AsrEngine {
             const posBigArray = new BigInt64Array(1);
 
             while (!this.eos.has(nextToken) && generatedIds.length < maxTokens) {
+                if (this.abortCurrent) {
+                    throw new Error('ABORTED');
+                }
                 this.embedRowInto(nextToken, stepRow, 0);
                 posBigArray[0] = BigInt(pos);
 

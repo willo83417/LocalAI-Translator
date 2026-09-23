@@ -893,7 +893,6 @@ const App: React.FC = () => {
                 showNotification(t('notifications.asrModelUnloaded'), 'info');
                 break;
             case 'transcription-partial':
-                isAsrProcessingRef.current = false;
                 setInputText(payload);
                 break;
             case 'transcription':
@@ -1555,17 +1554,21 @@ const App: React.FC = () => {
             ['恩', '嗯', '啊', '哦', '喔', '呃', 'um', 'uh', 'ah', 'oh'].includes(transcribedText.toLowerCase());
 
         setInputText(transcript);
-        if (isFinal && transcribedText && !isMeaningless) {
-            if (isReverseTranslateRef.current) {
-                performReverseTranslate(transcript);
+        if (isFinal) {
+            setIsRecording(false);
+            setIsAstRecording(false);
+            if (transcribedText && !isMeaningless) {
+                if (isReverseTranslateRef.current) {
+                    performReverseTranslateRef.current(transcript);
+                    isReverseTranslateRef.current = false;
+                } else if (isRealtimeAsrEnabledRef.current) {
+                    performTranslateRef.current(transcript);
+                }
+            } else {
                 isReverseTranslateRef.current = false;
-            } else if (isRealtimeAsrEnabledRef.current) {
-                performTranslateRef.current(transcript);
             }
-        } else if (isFinal && isMeaningless) {
-            isReverseTranslateRef.current = false;
         }
-    }, [performReverseTranslate]);
+    }, []);
 
     const handleWebSpeechError = useCallback((error: string) => {
         showNotification(t('notifications.speechRecognitionError', { error }), 'error');
@@ -1709,6 +1712,11 @@ const App: React.FC = () => {
                     try {
                         isAsrProcessingRef.current = true;
                         const audioData = await processAudioForTranscription(audioBlob, { noiseSuppression: false, gain: 1.0 });
+                        // Ignore fragments shorter than 0.8s (12800 samples at 16kHz) to avoid Whisper hallucinations on noise
+                        if (audioData.length < 12800) {
+                            isAsrProcessingRef.current = false;
+                            return;
+                        }
                         if (asrWorkerRef.current) {
                             asrWorkerRef.current.postMessage({ 
                                 type: 'transcribe', 
@@ -1898,6 +1906,11 @@ const App: React.FC = () => {
                     try {
                         isAsrProcessingRef.current = true;
                         const audioData = await processAudioForTranscription(audioBlob, { noiseSuppression: false, gain: 1.0 });
+                        // Ignore fragments shorter than 0.8s (12800 samples at 16kHz) to avoid Whisper hallucinations on noise
+                        if (audioData.length < 12800) {
+                            isAsrProcessingRef.current = false;
+                            return;
+                        }
                         if (asrWorkerRef.current) {
                             asrWorkerRef.current.postMessage({ 
                                 type: 'transcribe', 

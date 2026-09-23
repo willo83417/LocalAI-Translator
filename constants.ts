@@ -44,7 +44,7 @@ export const OFFLINE_MODELS = [
 ];
 
 export const OFFLINE_MODELS_TS = [
-    { 
+  { 
         name: 'Gemma-4-E2B-it (3.8 GB)', 
         value: 'onnx-community/gemma-4-E2B-it-ONNX', 
         dtype: 'q4f16',
@@ -60,14 +60,14 @@ export const OFFLINE_MODELS_TS = [
 			decoder_model_merged: "q2f16",
 			audio_encoder: "q2f16"
 		},
-    },
-    { 
+  },
+  { 
         name: 'Gemma-4-E4B-it (4.5 GB)', 
         value: 'onnx-community/gemma-4-E4B-it-ONNX', 
         dtype: 'q4',
 		generationMode: 'Gemma4ForConditionalGeneration'
-    },
-    { 
+  },
+  { 
         name: 'Gemma-4-E4B-it-qat (3.6 GB)', 
         value: 'onnx-community/gemma-4-E4B-it-qat-mobile-ONNX', 
 		generationMode: 'Gemma4ForConditionalGeneration',
@@ -104,15 +104,6 @@ export const ASR_MODELS: AsrModel[] = [
             decoder_model_merged: 'q4',
         },
         size: '~590 MB'
-    },
-	{
-        id: 'willopcbeta/lite-whisper-small-fast-ONNX',
-        name: 'lite-whisper-small-fast',
-        quantization: {
-            encoder_model: 'q4',
-            decoder_model_merged: 'q4',
-        },
-        size: '~280 MB'
     },
 	{
         id: 'willopcbeta/unsloth-whisper-small-ONNX',

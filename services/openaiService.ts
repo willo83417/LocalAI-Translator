@@ -153,7 +153,6 @@ export const translateImage = async (
                         ],
                     },
                 ],
-                max_tokens: 8192,
                 response_format: { type: "json_object" },
                 stream: false, // Explicitly disable streaming
             }),
