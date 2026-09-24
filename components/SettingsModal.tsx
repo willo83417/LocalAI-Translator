@@ -3,7 +3,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { XIcon, TrashIcon } from './icons';
 import { DownloadProgress } from '../services/downloadManager';
-import { OFFLINE_MODELS, OFFLINE_MODELS_TS, ASR_MODELS, ASR_MODELS_RUNTIME, OCR_MODELS } from '../constants';
+import { OFFLINE_MODELS, OFFLINE_MODELS_TS, ASR_MODELS, ASR_MODELS_RUNTIME, OCR_MODELS, LANGUAGES } from '../constants';
+import { filterVoicesForLanguage, testVoice, stopVoiceTest, normalizeWebSpeechLang } from '../utils/speechUtils';
 import type { Language, OcrEngineStatus, OcrModelConfig, AsrEngineType, NemotronProfile, NemotronBeamWidth } from '../types';
 
 interface SettingsModalProps {
@@ -179,6 +180,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     const [offlineTtsRate, setOfflineTtsRate] = useState(currentOfflineTtsRate);
     const [offlineTtsPitch, setOfflineTtsPitch] = useState(currentOfflineTtsPitch);
     const [filteredVoices, setFilteredVoices] = useState<SpeechSynthesisVoice[]>([]);
+    const [ttsLangCode, setTtsLangCode] = useState(targetLang?.code && targetLang.code !== 'auto' ? targetLang.code : 'zh-TW');
+    const [isPlayingTestVoice, setIsPlayingTestVoice] = useState(false);
 
     // Offline Model Params State
     const [offlineMaxTokens, setOfflineMaxTokens] = useState(currentOfflineMaxTokens);
@@ -212,6 +215,9 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
             setOfflineTtsVoiceURI(currentOfflineTtsVoiceURI);
             setOfflineTtsRate(currentOfflineTtsRate);
             setOfflineTtsPitch(currentOfflineTtsPitch);
+            const initialLang = targetLang?.code && targetLang.code !== 'auto' ? targetLang.code : 'zh-TW';
+            setTtsLangCode(initialLang);
+            setIsPlayingTestVoice(false);
             
             // Params
             setOfflineMaxTokens(currentOfflineMaxTokens);
@@ -236,33 +242,40 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
             // OCR
             setSelectedOcrModel(currentSelectedOcrModel);
             setIsOcrAutoInitEnabled(currentIsOcrAutoInitEnabled);
+        } else if (!isOpen && prevIsOpenRef.current) {
+            stopVoiceTest();
+            setIsPlayingTestVoice(false);
         }
         prevIsOpenRef.current = isOpen;
     }, [isOpen]);
     
+    // Standardized Google Web Speech / BCP 47 voice matching
     useEffect(() => {
-        if (isOpen && voices.length > 0 && targetLang) {
-            let langVoices = voices.filter(v => 
-                v.lang.toLowerCase() === targetLang.code.toLowerCase() || 
-                v.lang.replace('_', '-').toLowerCase() === targetLang.code.toLowerCase()
-            );
-            if (langVoices.length === 0) {
-                const baseLangCode = targetLang.code.split('-')[0].toLowerCase();
-                langVoices = voices.filter(v => 
-                    v.lang.toLowerCase().startsWith(baseLangCode) || 
-                    v.lang.replace('_', '-').toLowerCase().startsWith(baseLangCode)
-                );
-            }
-            setFilteredVoices(langVoices);
-            if (offlineTtsVoiceURI && !langVoices.some(v => v.voiceURI === offlineTtsVoiceURI)) {
-                setOfflineTtsVoiceURI(langVoices[0]?.voiceURI || '');
+        if (isOpen && voices.length > 0) {
+            const activeLang = ttsLangCode || (targetLang?.code && targetLang.code !== 'auto' ? targetLang.code : 'zh-TW');
+            const matchedVoices = filterVoicesForLanguage(voices, activeLang);
+            setFilteredVoices(matchedVoices);
+            
+            if (matchedVoices.length > 0) {
+                // If current selected voice is valid in this filtered list, keep it; otherwise set to highest-scored voice
+                if (!offlineTtsVoiceURI || !matchedVoices.some(v => v.voiceURI === offlineTtsVoiceURI)) {
+                    setOfflineTtsVoiceURI(matchedVoices[0].voiceURI);
+                }
             }
         }
-    }, [isOpen, voices, targetLang, offlineTtsVoiceURI]);
+    }, [isOpen, voices, ttsLangCode, targetLang]);
 
     if (!isOpen) return null;
+
+    const handleClose = () => {
+        stopVoiceTest();
+        setIsPlayingTestVoice(false);
+        onClose();
+    };
     
     const handleSave = () => {
+        stopVoiceTest();
+        setIsPlayingTestVoice(false);
         onSave(
             apiKey, modelName, huggingFaceApiKey, offlineModelName, asrModelId, isOfflineEnabled, isOfflineAsrEnabled, isRealtimeAsrEnabled, isWebSpeechApiEnabled, onlineProvider, openaiApiUrl,
             isOfflineTtsEnabled, offlineTtsVoiceURI, offlineTtsRate, offlineTtsPitch, isTwoStepJpCnEnabled,
@@ -482,7 +495,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                 <div className="p-6 border-b border-gray-200">
                     <div className="flex justify-between items-center mb-4">
                         <h2 id="settings-title" className="text-xl font-semibold text-gray-800">{t('settings.title')}</h2>
-                        <button onClick={onClose} className="text-gray-400 hover:text-gray-600" aria-label={t('settings.closeAriaLabel')}>
+                        <button onClick={handleClose} className="text-gray-400 hover:text-gray-600" aria-label={t('settings.closeAriaLabel')}>
                             <XIcon />
                         </button>
                     </div>
@@ -705,15 +718,17 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                             </div>
                             <div className="border-t border-gray-200"></div>
 
-                            <ToggleSwitch
-                                id="web-speech-toggle"
-                                isEnabled={isWebSpeechApiEnabled}
-                                setIsEnabled={(enabled) => {
-                                    setIsWebSpeechApiEnabled(enabled);
-                                }}
-                                title={t('settings.enableWebSpeechLabel')}
-                                description={t('settings.enableWebSpeechDescription')}
-                             />
+                            <div className="space-y-1">
+                                <ToggleSwitch
+                                    id="web-speech-toggle"
+                                    isEnabled={isWebSpeechApiEnabled}
+                                    setIsEnabled={(enabled) => {
+                                        setIsWebSpeechApiEnabled(enabled);
+                                    }}
+                                    title={t('settings.enableWebSpeechLabel')}
+                                    description={t('settings.enableWebSpeechDescription')}
+                                />
+                            </div>
                              <div className="border-t border-gray-200"></div>
                              
                              <ToggleSwitch
@@ -936,29 +951,89 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                                 description={t('settings.enableCustomTtsDescription')}
                              />
 
-                             <div>
-                                <label htmlFor="voice-select" className="block text-sm font-medium text-gray-700 mb-1">{t('settings.voiceLabel')}</label>
-                                <select
-                                    id="voice-select"
-                                    value={offlineTtsVoiceURI}
-                                    onChange={(e) => setOfflineTtsVoiceURI(e.target.value)}
-                                    className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100"
-                                    disabled={filteredVoices.length === 0}
-                                >
-                                    {filteredVoices.length > 0 ? (
-                                        filteredVoices.map(voice => (
-                                            <option key={voice.voiceURI} value={voice.voiceURI}>
-                                                {voice.name} ({voice.lang})
+                             <div className="space-y-4">
+                                <div>
+                                    <label htmlFor="tts-lang-select" className="block text-sm font-medium text-gray-700 mb-1">
+                                        {t('settings.ttsTargetLangLabel', 'TTS 語系篩選 (Voice Language Filter)')}
+                                    </label>
+                                    <select
+                                        id="tts-lang-select"
+                                        value={ttsLangCode}
+                                        onChange={(e) => {
+                                            const newLang = e.target.value;
+                                            setTtsLangCode(newLang);
+                                            const newVoices = filterVoicesForLanguage(voices, newLang);
+                                            setFilteredVoices(newVoices);
+                                            if (newVoices.length > 0) {
+                                                setOfflineTtsVoiceURI(newVoices[0].voiceURI);
+                                            }
+                                        }}
+                                        className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 bg-white text-sm"
+                                    >
+                                        {LANGUAGES.filter(l => l.code !== 'auto').map(lang => (
+                                            <option key={lang.code} value={lang.code}>
+                                                {t(lang.name)} ({normalizeWebSpeechLang(lang.code)})
                                             </option>
-                                        ))
-                                    ) : (
-                                        <option value="">{t('settings.voicePlaceholder', { languageName: t(targetLang.name) })}</option>
-                                    )}
-                                </select>
-                             </div>
+                                        ))}
+                                    </select>
+                                </div>
 
-                             <Slider id="rate-slider" label={t('settings.rateLabel')} value={offlineTtsRate} onChange={e => setOfflineTtsRate(parseFloat(e.target.value))} min={0.5} max={2} step={0.1} />
-                             <Slider id="pitch-slider" label={t('settings.pitchLabel')} value={offlineTtsPitch} onChange={e => setOfflineTtsPitch(parseFloat(e.target.value))} min={0} max={2} step={0.1} />
+                                <div>
+                                    <label htmlFor="voice-select" className="block text-sm font-medium text-gray-700 mb-1">
+                                        {t('settings.voiceLabel')} ({filteredVoices.length})
+                                    </label>
+                                    <div className="flex gap-2 items-center">
+                                        <select
+                                            id="voice-select"
+                                            value={offlineTtsVoiceURI}
+                                            onChange={(e) => setOfflineTtsVoiceURI(e.target.value)}
+                                            className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100 text-sm"
+                                            disabled={filteredVoices.length === 0}
+                                        >
+                                            {filteredVoices.length > 0 ? (
+                                                filteredVoices.map(voice => (
+                                                    <option key={voice.voiceURI} value={voice.voiceURI}>
+                                                        {voice.name} ({voice.lang})
+                                                    </option>
+                                                ))
+                                            ) : (
+                                                <option value="">{t('settings.voicePlaceholder', { languageName: t(LANGUAGES.find(l => l.code === ttsLangCode)?.name || targetLang.name) })}</option>
+                                            )}
+                                        </select>
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                if (isPlayingTestVoice) {
+                                                    stopVoiceTest();
+                                                    setIsPlayingTestVoice(false);
+                                                } else {
+                                                    setIsPlayingTestVoice(true);
+                                                    testVoice(
+                                                        offlineTtsVoiceURI,
+                                                        undefined,
+                                                        offlineTtsRate,
+                                                        offlineTtsPitch,
+                                                        ttsLangCode,
+                                                        () => setIsPlayingTestVoice(false),
+                                                        () => setIsPlayingTestVoice(false)
+                                                    );
+                                                }
+                                            }}
+                                            disabled={!offlineTtsVoiceURI}
+                                            className={`px-3 py-2 rounded-md text-xs font-medium whitespace-nowrap border transition-colors flex items-center gap-1 shrink-0 ${
+                                                isPlayingTestVoice
+                                                    ? 'bg-amber-100 text-amber-800 border-amber-300 hover:bg-amber-200'
+                                                    : 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100 disabled:opacity-50 disabled:cursor-not-allowed'
+                                            }`}
+                                        >
+                                            {isPlayingTestVoice ? '⏹ Stop' : '▶ Play'}
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <Slider id="rate-slider" label={t('settings.rateLabel')} value={offlineTtsRate} onChange={e => setOfflineTtsRate(parseFloat(e.target.value))} min={0.5} max={2} step={0.1} />
+                                <Slider id="pitch-slider" label={t('settings.pitchLabel')} value={offlineTtsPitch} onChange={e => setOfflineTtsPitch(parseFloat(e.target.value))} min={0} max={2} step={0.1} />
+                             </div>
                         </div>
                     )}
                     {activeTab === 'ocr' && (

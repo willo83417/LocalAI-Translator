@@ -14,6 +14,7 @@ import { processAudioForTranscription, checkAsrModelCacheStatus, clearAsrCache }
 import { useWebSpeech } from './hooks/useWebSpeech';
 import { usePaddleOcr } from './hooks/usePaddleOcr';
 import { deleteOcrModelCache } from './utils/db';
+import { filterVoicesForLanguage, normalizeWebSpeechLang } from './utils/speechUtils';
 import type { Language, TranslationHistoryItem, CustomOfflineModel, EsearchOCROutput, EsearchOCRItem, AsrEngineType, NemotronProfile, NemotronBeamWidth } from './types';
 import { LANGUAGES, OFFLINE_MODELS, OFFLINE_MODELS_TS, ASR_MODELS, OCR_MODELS } from './constants';
 import { GeminiLiveService } from './services/geminiLiveService';
@@ -1336,7 +1337,7 @@ const App: React.FC = () => {
         }
 
         const utterance = new SpeechSynthesisUtterance(translatedText);
-        utterance.lang = targetLang.code;
+        utterance.lang = normalizeWebSpeechLang(targetLang.code);
 
         if (isOfflineTtsEnabled) {
             const selectedVoice = voices.find(v => v.voiceURI === offlineTtsVoiceURI);
@@ -1346,21 +1347,11 @@ const App: React.FC = () => {
             utterance.rate = offlineTtsRate;
             utterance.pitch = offlineTtsPitch;
         } else {
-            let langVoices = voices.filter(v => 
-                v.lang.toLowerCase() === targetLang.code.toLowerCase() || 
-                v.lang.replace('_', '-').toLowerCase() === targetLang.code.toLowerCase()
-            );
-            if (langVoices.length === 0) {
-                const baseLangCode = targetLang.code.split('-')[0].toLowerCase();
-                langVoices = voices.filter(v => 
-                    v.lang.toLowerCase().startsWith(baseLangCode) ||
-                    v.lang.replace('_', '-').toLowerCase().startsWith(baseLangCode)
-                );
-            }
+            const langVoices = filterVoicesForLanguage(voices, targetLang.code);
 
             if (langVoices.length > 0) {
-                const femaleVoice = langVoices.find(v => /female|women|girl|mei-jia|zira|ayumi|kyoko/i.test(v.name));
-                const maleVoice = langVoices.find(v => /male|men|boy|liang|ichiro/i.test(v.name));
+                const femaleVoice = langVoices.find(v => /female|women|girl|mei-jia|zira|ayumi|kyoko|xiaoxiao|yating|sin-ji/i.test(v.name));
+                const maleVoice = langVoices.find(v => /male|men|boy|liang|ichiro|yunxi|danny|yunjhe/i.test(v.name));
                 let selectedVoice: SpeechSynthesisVoice | undefined;
                 if (gender === 'female') {
                     selectedVoice = femaleVoice || langVoices.find(v => v !== maleVoice) || langVoices[0];
