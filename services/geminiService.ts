@@ -1,5 +1,6 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
+import type { ImageLensResult, ImageLensBlock } from "../types";
 
 const blobToBase64 = (blob: Blob): Promise<string> => {
     return new Promise((resolve, reject) => {
@@ -99,9 +100,15 @@ export const translateImage = async (
     };
 
     const textPart = {
-        text: `1. First, accurately extract all text from the provided image.
-2. Then, translate the extracted text into ${targetLang}.
-3. Finally, return a single JSON object with two keys: "sourceText" containing the exact extracted text, and "translatedText" containing the translation. Do not include any other explanations or markdown formatting.`,
+        text: `You are an expert OCR and translation vision assistant.
+CRITICAL TARGET LANGUAGE: "${targetLang}".
+- You MUST translate the extracted text strictly into "${targetLang}".
+- Do NOT output English unless the requested target language is explicitly English!
+- Even if the image contains mixed languages (such as a Japanese receipt with English, Chinese, and Korean notices), you MUST translate everything into "${targetLang}".
+
+1. First, accurately extract all text from the provided image as "sourceText".
+2. Then, translate the extracted text into "${targetLang}" as "translatedText".
+3. Return a single JSON object with two keys: "sourceText" and "translatedText". Do not include any other explanations or markdown formatting outside the JSON.`,
     };
 
     try {
@@ -115,11 +122,11 @@ export const translateImage = async (
                     properties: {
                         sourceText: {
                             type: Type.STRING,
-                            description: 'The text extracted from the image.'
+                            description: 'The text extracted from the image in its original language.'
                         },
                         translatedText: {
                             type: Type.STRING,
-                            description: 'The translated text.'
+                            description: `The translated text strictly translated into ${targetLang}.`
                         },
                     },
                     required: ["sourceText", "translatedText"],
@@ -142,6 +149,147 @@ export const translateImage = async (
             throw new Error('Failed to parse the response from the Gemini API. The response was not valid JSON.');
         }
         throw new Error('Gemini API request for image translation failed.');
+    }
+};
+
+export const translateImageWithLens = async (
+    imageDataUrl: string,
+    targetLang: string,
+    apiKey: string,
+    modelName: string
+): Promise<ImageLensResult> => {
+    if (!apiKey) {
+        throw new Error('Gemini API Key is not set. Please add it in the settings.');
+    }
+
+    const ai = new GoogleGenAI({ apiKey });
+
+    const match = imageDataUrl.match(/^data:(image\/\w+);base64,(.*)$/);
+    if (!match) {
+        throw new Error('Invalid image data URL format.');
+    }
+    const mimeType = match[1];
+    const base64Data = match[2];
+
+    const imagePart = {
+        inlineData: {
+            mimeType,
+            data: base64Data,
+        },
+    };
+
+    const textPart = {
+        text: `You are an expert OCR and translation vision assistant like Google Lens.
+CRITICAL TRANSLATION REQUIREMENT:
+- TARGET TRANSLATION LANGUAGE: "${targetLang}".
+- You MUST translate EVERY single detected text block strictly into "${targetLang}".
+- Absolutely DO NOT output English unless the requested target language is explicitly English!
+- Even if the image contains mixed or multiple languages (e.g. Japanese receipt with English, Chinese, or Korean notices at the bottom), ALL non-target text MUST be translated into "${targetLang}".
+- Both the individual "translatedText" in each block and the overall "translatedText" MUST be in "${targetLang}".
+
+Task instructions:
+1. Accurately detect all readable text segments/blocks in the image.
+2. For receipts, bills, menus, and tabular items: group horizontally adjacent items on the same row or line together into one logical block (e.g. "Item name + quantity + price") to maintain clean structure and prevent text blocks from overlapping vertically.
+3. For each block, return its 2D bounding box as [ymin, xmin, ymax, xmax] in normalized coordinates from 0 to 1000 (integers).
+4. Provide the extracted sourceText exactly as it appears in the image, and translate it into "${targetLang}" as translatedText.
+5. Also provide the concatenated complete "sourceText" and the complete "translatedText" in "${targetLang}".
+Return a JSON object conforming strictly to the response schema.`,
+    };
+
+    try {
+        const response = await ai.models.generateContent({
+            model: modelName,
+            contents: { parts: [textPart, imagePart] },
+            config: {
+                systemInstruction: `You are an expert OCR and translation vision assistant. Your absolute and only target translation language is "${targetLang}". You MUST translate all text found in the image exclusively into "${targetLang}". Under NO circumstances should you output English unless "${targetLang}" is explicitly English. For receipts and multi-line documents, group adjacent items on the same row into a single block to keep bounding boxes neat and non-overlapping.`,
+                responseMimeType: "application/json",
+                responseSchema: {
+                    type: Type.OBJECT,
+                    properties: {
+                        sourceText: {
+                            type: Type.STRING,
+                            description: 'The complete extracted text from the image.'
+                        },
+                        translatedText: {
+                            type: Type.STRING,
+                            description: `The complete translated text strictly in ${targetLang}.`
+                        },
+                        blocks: {
+                            type: Type.ARRAY,
+                            description: 'List of detected text regions with bounding boxes and translations.',
+                            items: {
+                                type: Type.OBJECT,
+                                properties: {
+                                    box_2d: {
+                                        type: Type.ARRAY,
+                                        description: 'Normalized bounding box [ymin, xmin, ymax, xmax] on a scale of 0 to 1000',
+                                        items: { type: Type.INTEGER }
+                                    },
+                                    sourceText: {
+                                        type: Type.STRING,
+                                        description: 'Extracted source text in this block'
+                                    },
+                                    translatedText: {
+                                        type: Type.STRING,
+                                        description: `Translated text in this block strictly translated into ${targetLang}`
+                                    }
+                                },
+                                required: ["box_2d", "sourceText", "translatedText"]
+                            }
+                        }
+                    },
+                    required: ["sourceText", "translatedText", "blocks"]
+                },
+            },
+        });
+
+        const jsonString = response.text?.trim() || "{}";
+        const result = JSON.parse(jsonString);
+
+        const sourceText = typeof result.sourceText === 'string' ? result.sourceText : '';
+        const translatedText = typeof result.translatedText === 'string' ? result.translatedText : '';
+        let blocks: ImageLensBlock[] = [];
+
+        if (Array.isArray(result.blocks)) {
+            blocks = result.blocks.map((b: any) => {
+                let box: [number, number, number, number] = [0, 0, 1000, 1000];
+                if (Array.isArray(b.box_2d) && b.box_2d.length >= 4) {
+                    box = [
+                        Math.max(0, Math.min(1000, Number(b.box_2d[0]) || 0)),
+                        Math.max(0, Math.min(1000, Number(b.box_2d[1]) || 0)),
+                        Math.max(0, Math.min(1000, Number(b.box_2d[2]) || 1000)),
+                        Math.max(0, Math.min(1000, Number(b.box_2d[3]) || 1000)),
+                    ];
+                }
+                return {
+                    box_2d: box,
+                    sourceText: String(b.sourceText || ''),
+                    translatedText: String(b.translatedText || ''),
+                };
+            }).filter((b: ImageLensBlock) => b.sourceText.trim().length > 0 || b.translatedText.trim().length > 0);
+        }
+
+        return {
+            sourceText,
+            translatedText,
+            blocks,
+            imageUrl: imageDataUrl
+        };
+
+    } catch (error) {
+        console.error('Error translating image with lens in Gemini:', error);
+        // Fallback to standard translateImage if lens parsing fails
+        try {
+            const fallback = await translateImage(imageDataUrl, targetLang, apiKey, modelName);
+            return {
+                sourceText: fallback.sourceText,
+                translatedText: fallback.translatedText,
+                blocks: [],
+                imageUrl: imageDataUrl
+            };
+        } catch {
+            throw new Error('Gemini Lens image translation failed.');
+        }
     }
 };
 

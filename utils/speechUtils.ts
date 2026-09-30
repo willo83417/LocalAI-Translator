@@ -340,3 +340,45 @@ export function stopVoiceTest(): void {
         activePreviewUtterance = null;
     }
 }
+
+/**
+ * Returns an explicit, unambiguous natural language description for LLM translation prompts.
+ * Prevents vision models from mistaking locale codes or falling back to English when encountering multilingual receipts.
+ */
+export function getLanguagePromptDescription(langCode: string): string {
+    const code = (langCode || '').trim().toLowerCase();
+    if (code === 'zh-tw' || code === 'zh-hant' || code === 'cmn-hant-tw') {
+        return 'Traditional Chinese (繁體中文, 台灣正體)';
+    }
+    if (code === 'zh-hk' || code === 'yue-hant-hk') {
+        return 'Traditional Chinese - Hong Kong (繁體中文, 香港習慣用語)';
+    }
+    if (code === 'zh-hans' || code === 'zh-cn' || code === 'cmn-hans-cn' || code === 'zh') {
+        return 'Simplified Chinese (簡體中文)';
+    }
+    if (code.startsWith('ja')) {
+        return 'Japanese (日本語)';
+    }
+    if (code.startsWith('ko')) {
+        return 'Korean (한국어)';
+    }
+    if (code.startsWith('en')) {
+        return 'English';
+    }
+    if (code.startsWith('es')) {
+        return 'Spanish (Español)';
+    }
+    if (code.startsWith('fr')) {
+        return 'French (Français)';
+    }
+    if (code.startsWith('de')) {
+        return 'German (Deutsch)';
+    }
+    if (code.startsWith('it')) {
+        return 'Italian (Italiano)';
+    }
+    if (code.startsWith('ru')) {
+        return 'Russian (Русский)';
+    }
+    return langCode;
+}

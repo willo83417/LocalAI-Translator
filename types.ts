@@ -81,3 +81,16 @@ export interface OcrModelConfig {
     recPath: string;
     dictPath?: string;
 }
+
+export interface ImageLensBlock {
+    box_2d: [number, number, number, number]; // [ymin, xmin, ymax, xmax] in normalized 0..1000 coordinates
+    sourceText: string;
+    translatedText: string;
+}
+
+export interface ImageLensResult {
+    sourceText: string;
+    translatedText: string;
+    blocks: ImageLensBlock[];
+    imageUrl: string;
+}

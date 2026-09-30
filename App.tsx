@@ -7,15 +7,16 @@ import CameraView from './components/CameraView';
 import SettingsModal from './components/SettingsModal';
 import HistoryModal from './components/HistoryModal';
 import ExpandedTextModal from './components/ExpandedTextModal';
-import { translateTextStream as translateTextGeminiStream, translateImage as translateImageGemini, transcribeAudioGemini } from './services/geminiService';
-import { translateTextStream as translateTextOpenAIStream, translateImage as translateImageOpenAI, transcribeAudioOpenAI } from './services/openaiService';
+import LensOverlayModal from './components/LensOverlayModal';
+import { translateTextStream as translateTextGeminiStream, translateImage as translateImageGemini, translateImageWithLens as translateImageWithLensGemini, transcribeAudioGemini } from './services/geminiService';
+import { translateTextStream as translateTextOpenAIStream, translateImage as translateImageOpenAI, translateImageWithLens as translateImageWithLensOpenAI, transcribeAudioOpenAI } from './services/openaiService';
 import { downloadManager, type DownloadProgress } from './services/downloadManager';
 import { processAudioForTranscription, checkAsrModelCacheStatus, clearAsrCache } from './services/asrService';
 import { useWebSpeech } from './hooks/useWebSpeech';
 import { usePaddleOcr } from './hooks/usePaddleOcr';
 import { deleteOcrModelCache } from './utils/db';
-import { filterVoicesForLanguage, normalizeWebSpeechLang } from './utils/speechUtils';
-import type { Language, TranslationHistoryItem, CustomOfflineModel, EsearchOCROutput, EsearchOCRItem, AsrEngineType, NemotronProfile, NemotronBeamWidth } from './types';
+import { filterVoicesForLanguage, normalizeWebSpeechLang, getLanguagePromptDescription } from './utils/speechUtils';
+import type { Language, TranslationHistoryItem, CustomOfflineModel, EsearchOCROutput, EsearchOCRItem, AsrEngineType, NemotronProfile, NemotronBeamWidth, ImageLensResult } from './types';
 import { LANGUAGES, OFFLINE_MODELS, OFFLINE_MODELS_TS, ASR_MODELS, OCR_MODELS } from './constants';
 import { GeminiLiveService } from './services/geminiLiveService';
 import { createVad } from '@fluidinference/fluidvad';
@@ -188,6 +189,9 @@ const App: React.FC = () => {
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
     const [isHistoryOpen, setIsHistoryOpen] = useState(false);
     const [isExpandedTextOpen, setIsExpandedTextOpen] = useState(false);
+    const [isLensModalOpen, setIsLensModalOpen] = useState(false);
+    const [isLensLoading, setIsLensLoading] = useState(false);
+    const [lensResult, setLensResult] = useState<ImageLensResult | null>(null);
     const [history, setHistory] = useState<TranslationHistoryItem[]>([]);
     
     // Shared settings
@@ -2016,12 +2020,26 @@ const App: React.FC = () => {
         }
     }, [isAstRecording, isRecording, sourceLang, targetLang, showNotification, t, isOfflineAsrEnabled, isRealtimeAsrEnabled, webSpeech, isNoiseCancellationEnabled, audioGainValue, isWebSpeechApiEnabled, onlineProvider, apiKey, openaiApiUrl, modelName, isOfflineModeEnabled, offlineSupportAudio, isOfflineModelReady, getOrCreateWorker, performReverseTranslate, i18n, isGeminiLiveModel, liveServiceRef]);
 
-    const handleImageCaptured = useCallback(async (imageDataUrl: string) => {
-        //console.log('[App] handleImageCaptured triggered. OCR Status:', ocrEngineStatus);
+    const handleImageCaptured = useCallback(async (imageDataUrl: string, enableLens: boolean = true) => {
+        //console.log('[App] handleImageCaptured triggered. OCR Status:', ocrEngineStatus, 'enableLens:', enableLens);
         setIsCameraOpen(false);
-        setIsLoading(true);
-        setInputText(t('notifications.processingImage'));
-        setInputText('');
+
+        // If online mode and Lens is requested, transition immediately to LensOverlayModal with scanning animation!
+        const isOnlineLens = !isOfflineModeEnabled && isOnline && enableLens;
+        if (isOnlineLens) {
+            setLensResult({
+                sourceText: '',
+                translatedText: '',
+                blocks: [],
+                imageUrl: imageDataUrl
+            });
+            setIsLensLoading(true);
+            setIsLensModalOpen(true);
+        } else {
+            setIsLoading(true);
+            setInputText(t('notifications.processingImage'));
+            setInputText('');
+        }
     
         // Await two animation frames AND a short timeout to securely flush the React unmount 
         // before starting heavy worker tasks (WebGPU compilation might freeze GPU/UI threads)
@@ -2029,8 +2047,8 @@ const App: React.FC = () => {
         await new Promise(resolve => setTimeout(resolve, 50));
 
         try {
-            // Priority 1: Use local OCR if it's initialized and ready.
-            if (ocrEngineStatus === 'ready') {
+            // Priority 1: Use local OCR if offline OR if local OCR is active and lens is not requested
+            if (ocrEngineStatus === 'ready' && (isOfflineModeEnabled || !isOnline || !enableLens)) {
                 const image = new Image();
                 image.src = imageDataUrl;
                 await new Promise<void>((resolve, reject) => {
@@ -2090,28 +2108,61 @@ const App: React.FC = () => {
             } else { // Online mode
                 if (!isOnline) throw new Error(t('notifications.offlineImageTranslateError'));
                 
-                let result: { sourceText: string, translatedText: string };
-                const targetLangEn = targetLang.code;
-                if (onlineProvider === 'openai') {
-                    if (!apiKey) throw new Error("OpenAI API Key is not set.");
-                    if (!openaiApiUrl) throw new Error("OpenAI API URL is not set.");
-                    result = await translateImageOpenAI(imageDataUrl, targetLangEn, apiKey, textModelName, openaiApiUrl);
+                // Get explicit natural language description for the target language (e.g. "Traditional Chinese (繁體中文, 台灣正體)")
+                // This prevents LLMs from defaulting to English when handling multilingual receipts!
+                const targetLangPrompt = getLanguagePromptDescription(targetLang.code);
+                let fullSource = '';
+                let fullTranslated = '';
+                let lensBlocks: ImageLensResult['blocks'] = [];
+
+                if (enableLens) {
+                    let lensRes: ImageLensResult;
+                    if (onlineProvider === 'openai') {
+                        if (!apiKey) throw new Error("OpenAI API Key is not set.");
+                        if (!openaiApiUrl) throw new Error("OpenAI API URL is not set.");
+                        lensRes = await translateImageWithLensOpenAI(imageDataUrl, targetLangPrompt, apiKey, textModelName, openaiApiUrl);
+                    } else {
+                        if (!apiKey) throw new Error("Gemini API Key is not set.");
+                        lensRes = await translateImageWithLensGemini(imageDataUrl, targetLangPrompt, apiKey, textModelName);
+                    }
+                    fullSource = lensRes.sourceText;
+                    fullTranslated = lensRes.translatedText;
+                    lensBlocks = lensRes.blocks || [];
+
+                    setLensResult({
+                        sourceText: fullSource,
+                        translatedText: fullTranslated,
+                        blocks: lensBlocks,
+                        imageUrl: imageDataUrl
+                    });
+                    setIsLensLoading(false);
                 } else {
-                    if (!apiKey) throw new Error("Gemini API Key is not set.");
-                    result = await translateImageGemini(imageDataUrl, targetLangEn, apiKey, textModelName);
+                    let result: { sourceText: string, translatedText: string };
+                    if (onlineProvider === 'openai') {
+                        if (!apiKey) throw new Error("OpenAI API Key is not set.");
+                        if (!openaiApiUrl) throw new Error("OpenAI API URL is not set.");
+                        result = await translateImageOpenAI(imageDataUrl, targetLangPrompt, apiKey, textModelName, openaiApiUrl);
+                    } else {
+                        if (!apiKey) throw new Error("Gemini API Key is not set.");
+                        result = await translateImageGemini(imageDataUrl, targetLangPrompt, apiKey, textModelName);
+                    }
+                    fullSource = result.sourceText;
+                    fullTranslated = result.translatedText;
                 }
                 
-                setInputText(result.sourceText);
-                setTranslatedText(result.translatedText);
+                setInputText(fullSource);
+                setTranslatedText(fullTranslated);
     
-                const newHistoryItem: TranslationHistoryItem = {
-                    id: Date.now(), inputText: result.sourceText, translatedText: result.translatedText, sourceLang, targetLang,
-                };
-                setHistory(prevHistory => {
-                    const updatedHistory = [newHistoryItem, ...prevHistory].slice(0, 50);
-                    localStorage.setItem('translation-history', JSON.stringify(updatedHistory));
-                    return updatedHistory;
-                });
+                if (fullSource.trim() || fullTranslated.trim()) {
+                    const newHistoryItem: TranslationHistoryItem = {
+                        id: Date.now(), inputText: fullSource, translatedText: fullTranslated, sourceLang, targetLang,
+                    };
+                    setHistory(prevHistory => {
+                        const updatedHistory = [newHistoryItem, ...prevHistory].slice(0, 50);
+                        localStorage.setItem('translation-history', JSON.stringify(updatedHistory));
+                        return updatedHistory;
+                    });
+                }
                 setIsLoading(false);
             }
         } catch (err) {
@@ -2119,8 +2170,10 @@ const App: React.FC = () => {
             showNotification(t('notifications.imageProcessingFailed', { errorMessage }), 'error');
             setInputText(''); 
             setIsLoading(false);
+            setIsLensLoading(false);
+            setIsLensModalOpen(false);
         }
-    }, [isOfflineModeEnabled, isOfflineModelReady, offlineMaxNumImages, isOnline, apiKey, modelName, targetLang, sourceLang, showNotification, onlineProvider, openaiApiUrl, t, i18n, getOrCreateWorker, ocrEngineStatus, recognize, performTranslate]);
+    }, [isOfflineModeEnabled, isOfflineModelReady, offlineMaxNumImages, isOnline, apiKey, modelName, textModelName, targetLang, sourceLang, showNotification, onlineProvider, openaiApiUrl, t, i18n, getOrCreateWorker, ocrEngineStatus, recognize, performTranslate]);
 
     const handleSaveSettings = (
         newApiKey: string, 
@@ -2475,6 +2528,17 @@ const App: React.FC = () => {
                 isOpen={isExpandedTextOpen}
                 onClose={() => setIsExpandedTextOpen(false)}
                 text={translatedText}
+            />
+
+            <LensOverlayModal
+                isOpen={isLensModalOpen}
+                onClose={() => {
+                    setIsLensModalOpen(false);
+                    setIsLensLoading(false);
+                }}
+                lensResult={lensResult}
+                isLoading={isLensLoading}
+                onSpeak={(text) => handleSpeak(text)}
             />
         </div>
     );

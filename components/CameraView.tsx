@@ -12,12 +12,13 @@ import {
     Crop, 
     Check, 
     RefreshCw, 
-    Smartphone
+    Smartphone,
+    Sparkles
 } from 'lucide-react';
 
 interface CameraViewProps {
     onClose: () => void;
-    onImageCaptured: (imageDataUrl: string) => void;
+    onImageCaptured: (imageDataUrl: string, enableLens?: boolean) => void;
     imageFormat?: 'image/webp' | 'image/jpeg';
 }
 
@@ -50,9 +51,18 @@ const CameraView: React.FC<CameraViewProps> = ({ onClose, onImageCaptured, image
     // Preview state
     const [previewImage, setPreviewImage] = useState<string | null>(null);
     const [rawCapturedImage, setRawCapturedImage] = useState<string | null>(null);
-    const [croppedPreviewImage, setCroppedPreviewImage] = useState<string | null>(null);
-    const [isShowingCropped, setIsShowingCropped] = useState(false);
+    const [cropMode, setCropMode] = useState<'full' | 'strip' | 'doc'>('full');
     const [imageDimensions, setImageDimensions] = useState<{ width: number; height: number } | null>(null);
+
+    // Google Lens overlay translation mode toggle (persisted, default enabled)
+    const [isLensEnabled, setIsLensEnabled] = useState<boolean>(() => {
+        try {
+            const saved = localStorage.getItem('camera-lens-enabled');
+            return saved !== null ? JSON.parse(saved) : true;
+        } catch {
+            return true;
+        }
+    });
 
     // Camera hardware controls state
     const [torchOn, setTorchOn] = useState(false);
@@ -310,8 +320,51 @@ const CameraView: React.FC<CameraViewProps> = ({ onClose, onImageCaptured, image
         }, 1800);
     };
 
+    // Reusable crop generation helper (works for live capture & imported gallery images)
+    const generateCroppedImage = useCallback((
+        sourceDataUrl: string, 
+        shape: 'doc' | 'strip' | 'none',
+        format: string = imageFormat
+    ): Promise<{ croppedUrl: string; width: number; height: number } | null> => {
+        if (shape === 'none') return Promise.resolve(null);
+        return new Promise((resolve) => {
+            const img = new Image();
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                if (!ctx) return resolve(null);
+
+                let cropWRatio = 0.82;
+                let cropHRatio = 0.68;
+                if (shape === 'strip') {
+                    if (img.width > img.height) {
+                        cropWRatio = 0.90;
+                        cropHRatio = 0.45;
+                    } else {
+                        // Narrow tall receipt ratio
+                        cropWRatio = 0.72;
+                        cropHRatio = 0.88;
+                    }
+                }
+
+                const cropW = Math.round(img.width * cropWRatio);
+                const cropH = Math.round(img.height * cropHRatio);
+                const cropX = Math.round((img.width - cropW) / 2);
+                const cropY = Math.round((img.height - cropH) / 2);
+
+                canvas.width = cropW;
+                canvas.height = cropH;
+                ctx.drawImage(img, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+                const croppedUrl = canvas.toDataURL(format, 0.92);
+                resolve({ croppedUrl, width: cropW, height: cropH });
+            };
+            img.onerror = () => resolve(null);
+            img.src = sourceDataUrl;
+        });
+    }, [imageFormat]);
+
     // Native resolution capture with automatic orientation correction on canvas
-    const handleCapture = useCallback(() => {
+    const handleCapture = useCallback(async () => {
         if (isCapturing || !webcamRef.current) return;
 
         const video = webcamRef.current.video;
@@ -369,47 +422,21 @@ const CameraView: React.FC<CameraViewProps> = ({ onClose, onImageCaptured, image
 
             const fullDataUrl = canvas.toDataURL(imageFormat, 0.92);
             setRawCapturedImage(fullDataUrl);
-            setPreviewImage(fullDataUrl);
             setImageDimensions({ width: canvas.width, height: canvas.height });
 
             // Generate cropped version if framing guide was enabled
             if (guideShape !== 'none') {
-                const cropCanvas = document.createElement('canvas');
-                const cropCtx = cropCanvas.getContext('2d');
-                if (cropCtx) {
-                    let cropWRatio = 0.85;
-                    let cropHRatio = 0.45;
-                    if (guideShape === 'strip') {
-                        // For long strips / omikuji
-                        if (canvas.width > canvas.height) {
-                            cropWRatio = 0.90;
-                            cropHRatio = 0.40;
-                        } else {
-                            cropWRatio = 0.70;
-                            cropHRatio = 0.85;
-                        }
-                    } else {
-                        // Standard document shape
-                        cropWRatio = 0.80;
-                        cropHRatio = 0.65;
-                    }
-
-                    const cropW = Math.round(canvas.width * cropWRatio);
-                    const cropH = Math.round(canvas.height * cropHRatio);
-                    const cropX = Math.round((canvas.width - cropW) / 2);
-                    const cropY = Math.round((canvas.height - cropH) / 2);
-
-                    cropCanvas.width = cropW;
-                    cropCanvas.height = cropH;
-                    cropCtx.drawImage(canvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
-
-                    const croppedDataUrl = cropCanvas.toDataURL(imageFormat, 0.92);
-                    setCroppedPreviewImage(croppedDataUrl);
-                    setIsShowingCropped(false);
+                setCropMode(guideShape);
+                const res = await generateCroppedImage(fullDataUrl, guideShape);
+                if (res) {
+                    setPreviewImage(res.croppedUrl);
+                    setImageDimensions({ width: res.width, height: res.height });
+                } else {
+                    setPreviewImage(fullDataUrl);
                 }
             } else {
-                setCroppedPreviewImage(null);
-                setIsShowingCropped(false);
+                setCropMode('full');
+                setPreviewImage(fullDataUrl);
             }
 
         } catch (err) {
@@ -418,14 +445,34 @@ const CameraView: React.FC<CameraViewProps> = ({ onClose, onImageCaptured, image
         } finally {
             setIsCapturing(false);
         }
-    }, [isCapturing, effectiveAngle, screenAngle, imageFormat, guideShape, t]);
+    }, [isCapturing, effectiveAngle, screenAngle, imageFormat, guideShape, generateCroppedImage, t]);
+
+    // Apply or switch framing crop mode in preview screen
+    const handleApplyCropMode = useCallback(async (mode: 'full' | 'strip' | 'doc') => {
+        const base = rawCapturedImage || previewImage;
+        if (!base) return;
+        setCropMode(mode);
+        if (mode === 'full') {
+            setPreviewImage(base);
+            const img = new Image();
+            img.onload = () => setImageDimensions({ width: img.width, height: img.height });
+            img.src = base;
+        } else {
+            const res = await generateCroppedImage(base, mode);
+            if (res) {
+                setPreviewImage(res.croppedUrl);
+                setImageDimensions({ width: res.width, height: res.height });
+            }
+        }
+    }, [rawCapturedImage, previewImage, generateCroppedImage]);
 
     // Rotate the currently previewed image by 90 degrees (clockwise or counter-clockwise)
     const handleRotatePreview = useCallback((direction: 'cw' | 'ccw') => {
-        if (!previewImage) return;
+        const baseSrc = rawCapturedImage || previewImage;
+        if (!baseSrc) return;
 
         const img = new Image();
-        img.onload = () => {
+        img.onload = async () => {
             const canvas = document.createElement('canvas');
             canvas.width = img.height;
             canvas.height = img.width;
@@ -442,30 +489,22 @@ const CameraView: React.FC<CameraViewProps> = ({ onClose, onImageCaptured, image
 
             ctx.drawImage(img, 0, 0);
             const rotatedDataUrl = canvas.toDataURL(imageFormat, 0.92);
+            setRawCapturedImage(rotatedDataUrl);
+
+            if (cropMode !== 'full') {
+                const res = await generateCroppedImage(rotatedDataUrl, cropMode);
+                if (res) {
+                    setPreviewImage(res.croppedUrl);
+                    setImageDimensions({ width: res.width, height: res.height });
+                    return;
+                }
+            }
+
             setPreviewImage(rotatedDataUrl);
             setImageDimensions({ width: canvas.width, height: canvas.height });
         };
-        img.src = previewImage;
-    }, [previewImage, imageFormat]);
-
-    // Toggle between cropped and full image in preview
-    const handleToggleCropView = useCallback(() => {
-        if (!croppedPreviewImage || !rawCapturedImage) return;
-
-        if (isShowingCropped) {
-            setPreviewImage(rawCapturedImage);
-            setIsShowingCropped(false);
-            const img = new Image();
-            img.onload = () => setImageDimensions({ width: img.width, height: img.height });
-            img.src = rawCapturedImage;
-        } else {
-            setPreviewImage(croppedPreviewImage);
-            setIsShowingCropped(true);
-            const img = new Image();
-            img.onload = () => setImageDimensions({ width: img.width, height: img.height });
-            img.src = croppedPreviewImage;
-        }
-    }, [isShowingCropped, croppedPreviewImage, rawCapturedImage]);
+        img.src = baseSrc;
+    }, [rawCapturedImage, previewImage, cropMode, imageFormat, generateCroppedImage]);
 
     // File import from gallery
     const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -500,29 +539,29 @@ const CameraView: React.FC<CameraViewProps> = ({ onClose, onImageCaptured, image
                             ctx.drawImage(img, 0, 0, width, height);
                             try {
                                 const dataUrl = canvas.toDataURL(imageFormat, 0.92);
-                                setPreviewImage(dataUrl);
                                 setRawCapturedImage(dataUrl);
-                                setCroppedPreviewImage(null);
-                                setIsShowingCropped(false);
+                                setPreviewImage(dataUrl);
+                                setCropMode('full');
                                 setImageDimensions({ width, height });
                             } catch {
                                 const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.92);
-                                setPreviewImage(jpegDataUrl);
                                 setRawCapturedImage(jpegDataUrl);
-                                setCroppedPreviewImage(null);
-                                setIsShowingCropped(false);
+                                setPreviewImage(jpegDataUrl);
+                                setCropMode('full');
                                 setImageDimensions({ width, height });
                             }
                         } else {
-                            setPreviewImage(imageDataUrl);
                             setRawCapturedImage(imageDataUrl);
+                            setPreviewImage(imageDataUrl);
+                            setCropMode('full');
                             setImageDimensions({ width: img.width, height: img.height });
                         }
                         setIsCapturing(false);
                     };
                     img.onerror = () => {
-                        setPreviewImage(imageDataUrl);
                         setRawCapturedImage(imageDataUrl);
+                        setPreviewImage(imageDataUrl);
+                        setCropMode('full');
                         setIsCapturing(false);
                     };
                     img.src = imageDataUrl;
@@ -545,16 +584,15 @@ const CameraView: React.FC<CameraViewProps> = ({ onClose, onImageCaptured, image
     const handleConfirm = useCallback(() => {
         if (previewImage) {
             setTimeout(() => {
-                onImageCapturedRef.current(previewImage);
+                onImageCapturedRef.current(previewImage, isLensEnabled);
             }, 50);
         }
-    }, [previewImage]);
+    }, [previewImage, isLensEnabled]);
 
     const handleRetake = useCallback(() => {
         setPreviewImage(null);
         setRawCapturedImage(null);
-        setCroppedPreviewImage(null);
-        setIsShowingCropped(false);
+        setCropMode('full');
         setImageDimensions(null);
     }, []);
 
@@ -812,20 +850,64 @@ const CameraView: React.FC<CameraViewProps> = ({ onClose, onImageCaptured, image
 
                         {/* Bottom Actions Bar */}
                         <div className="w-full flex flex-col items-center gap-3 z-20 pb-2">
-                            {/* Optional Crop to Guide Toggle (only if captured with a guide) */}
-                            {croppedPreviewImage && (
-                                <button 
-                                    onClick={handleToggleCropView}
-                                    className="flex items-center gap-2 px-4 py-2 rounded-full bg-white/15 hover:bg-white/25 backdrop-blur-md text-xs font-medium text-white border border-white/20 active:scale-95 transition-all"
-                                >
+                            {/* Framing & Crop Mode Selector (Available for both camera capture & album import) */}
+                            <div className="flex items-center gap-1.5 p-1 rounded-full bg-black/60 backdrop-blur-md border border-white/20 shadow-lg text-xs">
+                                <span className="px-2 text-[11px] text-gray-300 font-medium flex items-center gap-1">
                                     <Crop className="w-3.5 h-3.5 text-blue-400" />
-                                    <span>
-                                        {isShowingCropped 
-                                            ? (t('camera.showOriginal') || '切換為完整圖片') 
-                                            : (t('camera.cropToFrame') || '切換為取景框裁切範圍')}
-                                    </span>
+                                    <span className="hidden sm:inline">{t('camera.framingGuide') || '取景裁切'}:</span>
+                                </span>
+                                <button 
+                                    type="button"
+                                    onClick={() => handleApplyCropMode('full')}
+                                    className={`px-3 py-1 rounded-full font-medium transition-all active:scale-95 ${
+                                        cropMode === 'full' 
+                                            ? 'bg-blue-600 text-white shadow-md' 
+                                            : 'text-white/80 hover:text-white hover:bg-white/10'
+                                    }`}
+                                >
+                                    {t('camera.cropFull') || '完整圖片'}
                                 </button>
-                            )}
+                                <button 
+                                    type="button"
+                                    onClick={() => handleApplyCropMode('strip')}
+                                    className={`px-3 py-1 rounded-full font-medium transition-all active:scale-95 flex items-center gap-1 ${
+                                        cropMode === 'strip' 
+                                            ? 'bg-blue-600 text-white shadow-md' 
+                                            : 'text-white/80 hover:text-white hover:bg-white/10'
+                                    }`}
+                                    title="適用於長條收據、籤詩、帳單，過濾周圍雜訊"
+                                >
+                                    <span>{t('camera.cropStrip') || '長條/收據框'}</span>
+                                </button>
+                                <button 
+                                    type="button"
+                                    onClick={() => handleApplyCropMode('doc')}
+                                    className={`px-3 py-1 rounded-full font-medium transition-all active:scale-95 ${
+                                        cropMode === 'doc' 
+                                            ? 'bg-blue-600 text-white shadow-md' 
+                                            : 'text-white/80 hover:text-white hover:bg-white/10'
+                                    }`}
+                                    title="適用於標準文件、證件、卡片"
+                                >
+                                    {t('camera.cropDoc') || '文件框'}
+                                </button>
+                            </div>
+
+                            {/* Google Lens AR Overlay Translation Checkbox */}
+                            <label className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-black/60 hover:bg-black/80 backdrop-blur-md text-xs font-medium text-white border border-white/20 cursor-pointer shadow-lg select-none transition-all active:scale-98">
+                                <input
+                                    type="checkbox"
+                                    checked={isLensEnabled}
+                                    onChange={(e) => {
+                                        const nextVal = e.target.checked;
+                                        setIsLensEnabled(nextVal);
+                                        localStorage.setItem('camera-lens-enabled', JSON.stringify(nextVal));
+                                    }}
+                                    className="w-4 h-4 text-blue-600 rounded bg-gray-800 border-gray-500 focus:ring-blue-500 focus:ring-offset-0 cursor-pointer"
+                                />
+                                <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                                <span>{t('camera.lensModeCheckbox') || '智慧鏡頭實景覆蓋翻譯'}</span>
+                            </label>
 
                             {/* Retake / Confirm Buttons */}
                             <div className="w-full flex justify-center items-center gap-6 max-w-sm">

@@ -1,5 +1,6 @@
 
 // services/openaiService.ts
+import type { ImageLensResult, ImageLensBlock } from '../types';
 
 export const translateTextStream = async (
     text: string,
@@ -126,9 +127,15 @@ export const translateImage = async (
         throw new Error('Invalid image data URL format. It must be a base64 encoded image data URL.');
     }
 
-    const prompt = `1. First, accurately extract all text from the provided image.
-2. Then, translate the extracted text into ${targetLang}.
-3. Finally, return a single JSON object with two keys: "sourceText" containing the exact extracted text, and "translatedText" containing the translation. Do not include any other explanations, markdown formatting, or code fences.`;
+    const prompt = `You are an expert OCR and translation vision assistant.
+CRITICAL TARGET LANGUAGE: "${targetLang}".
+- You MUST translate the extracted text strictly into "${targetLang}".
+- Do NOT output English unless the requested target language is explicitly English!
+- Even if the image contains mixed languages (such as a Japanese receipt with English, Chinese, and Korean notices), you MUST translate everything into "${targetLang}".
+
+1. First, accurately extract all text from the provided image as "sourceText".
+2. Then, translate the extracted text into "${targetLang}" as "translatedText".
+3. Return a single JSON object with two keys: "sourceText" and "translatedText". Do not include any other explanations, markdown formatting, or code fences outside the JSON.`;
 
     try {
         const response = await fetch(`${apiUrl}/v1/chat/completions`, {
@@ -140,6 +147,10 @@ export const translateImage = async (
             body: JSON.stringify({
                 model: modelName,
                 messages: [
+                    {
+                        role: 'system',
+                        content: `You are an expert OCR and image translation vision assistant. Your absolute and ONLY target translation language is "${targetLang}". You MUST translate all extracted text strictly and completely into "${targetLang}". Never default to or output English unless the user requested English explicitly.`
+                    },
                     {
                         role: 'user',
                         content: [
@@ -186,6 +197,141 @@ export const translateImage = async (
             throw error;
         }
         throw new Error('OpenAI API request for image translation failed.');
+    }
+};
+
+export const translateImageWithLens = async (
+    imageDataUrl: string,
+    targetLang: string,
+    apiKey: string,
+    modelName: string,
+    apiUrl: string
+): Promise<ImageLensResult> => {
+    if (!apiKey) throw new Error('OpenAI API Key is not set.');
+    if (!apiUrl) throw new Error('OpenAI API URL is not set.');
+
+    if (!imageDataUrl.startsWith('data:image/') || !imageDataUrl.includes(';base64,')) {
+        throw new Error('Invalid image data URL format. It must be a base64 encoded image data URL.');
+    }
+
+    const prompt = `You are an expert OCR and translation vision assistant like Google Lens.
+CRITICAL TRANSLATION REQUIREMENT:
+- TARGET TRANSLATION LANGUAGE: "${targetLang}".
+- You MUST translate EVERY detected text block strictly into "${targetLang}".
+- Absolutely DO NOT output English unless the requested target language is explicitly English!
+- Even if the image contains mixed or multiple languages (e.g. Japanese receipt with English, Chinese, or Korean notices at the bottom), ALL non-target text MUST be translated into "${targetLang}".
+- Both the individual "translatedText" in each block and the overall "translatedText" MUST strictly be in "${targetLang}".
+
+Task instructions:
+1. Accurately detect all readable text blocks in the image.
+2. For receipts, invoices, bills, and item lists: group horizontally adjacent items on the same row or line together into one logical block (e.g. "Item name + quantity + price") to maintain clean structure and prevent text boxes from overlapping vertically.
+3. For each block, provide its 2D bounding box as [ymin, xmin, ymax, xmax] in normalized coordinates from 0 to 1000 (integers relative to image height and width).
+4. Provide the extracted sourceText and translate it into "${targetLang}" as translatedText.
+5. Provide the full concatenated "sourceText" and full "translatedText" in "${targetLang}".
+
+Return a single JSON object with this exact structure:
+{
+  "sourceText": "full extracted text",
+  "translatedText": "full translated text strictly in ${targetLang}",
+  "blocks": [
+    {
+      "box_2d": [ymin, xmin, ymax, xmax],
+      "sourceText": "detected text",
+      "translatedText": "translated text strictly in ${targetLang}"
+    }
+  ]
+}
+Do not include any other markdown formatting, explanations, or code blocks outside the JSON.`;
+
+    try {
+        const response = await fetch(`${apiUrl}/v1/chat/completions`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${apiKey}`,
+            },
+            body: JSON.stringify({
+                model: modelName,
+                messages: [
+                    {
+                        role: 'system',
+                        content: `You are an expert OCR and translation assistant. MANDATORY RULE: The user's target language is strictly "${targetLang}". You MUST translate all extracted text exclusively into "${targetLang}". Never default to English unless the target is English. For receipts and multi-line lists, merge items on the same row/line into a single block to prevent overlapping.`
+                    },
+                    {
+                        role: 'user',
+                        content: [
+                            { type: 'text', text: prompt },
+                            {
+                                type: 'image_url',
+                                image_url: {
+                                    url: imageDataUrl,
+                                },
+                            },
+                        ],
+                    },
+                ],
+                response_format: { type: "json_object" },
+                stream: false,
+            }),
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.error?.message || `OpenAI API image request failed with status ${response.status}`);
+        }
+
+        const data = await response.json();
+        const content = data.choices[0]?.message?.content;
+        
+        if (!content) {
+            throw new Error('No content in OpenAI API response.');
+        }
+
+        const result = JSON.parse(content);
+        const sourceText = typeof result.sourceText === 'string' ? result.sourceText : '';
+        const translatedText = typeof result.translatedText === 'string' ? result.translatedText : '';
+        let blocks: ImageLensBlock[] = [];
+
+        if (Array.isArray(result.blocks)) {
+            blocks = result.blocks.map((b: any) => {
+                let box: [number, number, number, number] = [0, 0, 1000, 1000];
+                if (Array.isArray(b.box_2d) && b.box_2d.length >= 4) {
+                    box = [
+                        Math.max(0, Math.min(1000, Number(b.box_2d[0]) || 0)),
+                        Math.max(0, Math.min(1000, Number(b.box_2d[1]) || 0)),
+                        Math.max(0, Math.min(1000, Number(b.box_2d[2]) || 1000)),
+                        Math.max(0, Math.min(1000, Number(b.box_2d[3]) || 1000)),
+                    ];
+                }
+                return {
+                    box_2d: box,
+                    sourceText: String(b.sourceText || ''),
+                    translatedText: String(b.translatedText || ''),
+                };
+            }).filter((b: ImageLensBlock) => b.sourceText.trim().length > 0 || b.translatedText.trim().length > 0);
+        }
+
+        return {
+            sourceText,
+            translatedText,
+            blocks,
+            imageUrl: imageDataUrl
+        };
+
+    } catch (error) {
+        console.error('Error translating image with lens in OpenAI:', error);
+        // Fallback to standard translateImage
+        try {
+            const fallback = await translateImage(imageDataUrl, targetLang, apiKey, modelName, apiUrl);
+            return {
+                sourceText: fallback.sourceText,
+                translatedText: fallback.translatedText,
+                blocks: [],
+                imageUrl: imageDataUrl
+            };
+        } catch {
+            throw new Error('OpenAI Lens image translation failed.');
+        }
     }
 };
 
