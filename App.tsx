@@ -2536,6 +2536,11 @@ const App: React.FC = () => {
                     setIsLensModalOpen(false);
                     setIsLensLoading(false);
                 }}
+                onCaptureAgain={() => {
+                    setIsLensModalOpen(false);
+                    setIsLensLoading(false);
+                    setIsCameraOpen(true);
+                }}
                 lensResult={lensResult}
                 isLoading={isLensLoading}
                 onSpeak={(text) => handleSpeak(text)}

@@ -14,7 +14,8 @@ import {
     ZoomIn,
     ZoomOut,
     RotateCcw,
-    Type
+    Type,
+    Camera
 } from 'lucide-react';
 import type { ImageLensResult } from '../types';
 
@@ -24,6 +25,7 @@ interface LensOverlayModalProps {
     lensResult: ImageLensResult | null;
     isLoading?: boolean;
     onSpeak?: (text: string) => void;
+    onCaptureAgain?: () => void;
 }
 
 const LensOverlayModal: React.FC<LensOverlayModalProps> = ({
@@ -31,7 +33,8 @@ const LensOverlayModal: React.FC<LensOverlayModalProps> = ({
     onClose,
     lensResult,
     isLoading = false,
-    onSpeak
+    onSpeak,
+    onCaptureAgain
 }) => {
     const { t } = useTranslation();
     const [showTranslated, setShowTranslated] = useState(true);
@@ -289,6 +292,18 @@ const LensOverlayModal: React.FC<LensOverlayModalProps> = ({
                 </div>
 
                 <div className="flex items-center gap-2">
+                    {/* Continuous Camera Capture Button (Directly opens CameraView for next photo/album) */}
+                    {onCaptureAgain && (
+                        <button
+                            onClick={onCaptureAgain}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border bg-emerald-600 hover:bg-emerald-500 border-emerald-400 text-white shadow-lg active:scale-95 transition-all"
+                            title={t('lens.cameraTooltip') || '連續拍攝：拍攝下一張或從相簿選擇'}
+                        >
+                            <Camera className="w-3.5 h-3.5" />
+                            <span className="hidden sm:inline">{t('lens.continuousCapture') || '連續拍攝'}</span>
+                        </button>
+                    )}
+
                     {/* Toggle show all original vs translated */}
                     {!isLoading && (
                         <button
@@ -301,7 +316,7 @@ const LensOverlayModal: React.FC<LensOverlayModalProps> = ({
                             title={showTranslated ? (t('lens.showOriginal') || '顯示原文') : (t('lens.showTranslated') || '顯示譯文')}
                         >
                             {showTranslated ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
-                            <span>{showTranslated ? (t('lens.showOriginal') || '檢視原圖') : (t('lens.showTranslated') || '顯示實景譯文')}</span>
+                            <span className="hidden md:inline">{showTranslated ? (t('lens.showOriginal') || '檢視原圖') : (t('lens.showTranslated') || '顯示實景譯文')}</span>
                         </button>
                     )}
 
