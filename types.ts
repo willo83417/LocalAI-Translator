@@ -86,6 +86,7 @@ export interface ImageLensBlock {
     box_2d: [number, number, number, number]; // [ymin, xmin, ymax, xmax] in normalized 0..1000 coordinates
     sourceText: string;
     translatedText: string;
+    isVertical?: boolean;
 }
 
 export interface ImageLensResult {

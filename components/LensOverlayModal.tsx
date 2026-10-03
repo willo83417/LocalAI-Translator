@@ -176,6 +176,113 @@ const LensOverlayModal: React.FC<LensOverlayModalProps> = ({
         }));
     };
 
+    // Unified layout calculation for both DOM Preview (DevMode) and Canvas Export (SaveMode)
+    const computeBlockLayout = (
+        block: ImageLensBlock,
+        displayText: string,
+        scale: 'compact' | 'normal' | 'large'
+    ) => {
+        const [ymin, xmin, ymax, xmax] = block.box_2d;
+        const rawTopPct = ymin / 10;
+        const rawLeftPct = xmin / 10;
+        const rawWidthPct = (xmax - xmin) / 10;
+        const rawHeightPct = (ymax - ymin) / 10;
+
+        const isCompact = scale === 'compact';
+        const isLarge = scale === 'large';
+        const scaleRatio = isCompact ? 0.85 : isLarge ? 1.25 : 1.0;
+
+        const cjkCount = (displayText.match(/[\u4e00-\u9fa5\u3040-\u30ff\uac00-\ud7af]/g) || []).length;
+        const nonCjkCount = displayText.length - cjkCount;
+        const effectiveChars = Math.max(1, cjkCount + nonCjkCount * 0.55);
+
+        // Determine orientation
+        const isVertical = block.isVertical ?? (rawHeightPct > rawWidthPct * 1.25);
+        const isSingleColumnVertical = isVertical && (rawWidthPct <= 10 && effectiveChars <= 25);
+        const isMultiColumnVertical = isVertical && !isSingleColumnVertical;
+        const isHorizontalParagraph = !isVertical && (effectiveChars > 25 || (rawWidthPct > 15 && rawHeightPct > 8));
+
+        let widthPct: number;
+        let heightPct: number;
+        let fontStyle: string;
+
+        if (isSingleColumnVertical) {
+            // Keep single-column slim so adjacent title/subtitle columns don't collide
+            const minColWidth = isCompact ? 1.7 : isLarge ? 2.6 : 2.1;
+            widthPct = Math.min(Math.max(rawWidthPct, minColWidth), 8.5);
+
+            const charCount = Math.max(1, Array.from(displayText).length);
+            const charHeightRate = isCompact ? 1.6 : isLarge ? 2.6 : 2.1;
+            const minCalculatedHeight = Math.max(isCompact ? 4.0 : isLarge ? 6.5 : 5.0, charCount * charHeightRate + 1.0);
+            const maxAvailableHeight = Math.max(5, 99.5 - rawTopPct);
+            heightPct = Math.min(maxAvailableHeight, Math.max(rawHeightPct, minCalculatedHeight));
+
+            fontStyle = isCompact
+                ? 'text-[clamp(7.5px,0.95vw,11px)] font-medium'
+                : isLarge
+                ? 'text-[clamp(10px,1.4vw,17px)] font-bold'
+                : 'text-[clamp(8.5px,1.15vw,14px)] font-medium';
+        } else if (isMultiColumnVertical) {
+            // Multi-column vertical prose paragraph (沿革, 神德, 歷史內文)
+            const maxAvailableWidth = Math.max(6, 99.5 - rawLeftPct);
+            widthPct = Math.min(maxAvailableWidth, Math.max(rawWidthPct, 5.5));
+
+            const maxAvailableHeight = Math.max(6, 99.5 - rawTopPct);
+            heightPct = Math.min(maxAvailableHeight, Math.max(rawHeightPct, 6));
+
+            fontStyle = isCompact
+                ? 'text-[clamp(7.5px,0.85vw,11px)] leading-[1.3] font-normal'
+                : isLarge
+                ? 'text-[clamp(10px,1.25vw,15px)] leading-[1.35] font-medium'
+                : 'text-[clamp(8.5px,1.05vw,13px)] leading-[1.32] font-normal';
+        } else if (isHorizontalParagraph) {
+            const maxAvailableWidth = Math.max(10, 99.5 - rawLeftPct);
+            widthPct = Math.min(maxAvailableWidth, Math.max(rawWidthPct, 18));
+
+            const maxAvailableHeight = Math.max(8, 99.5 - rawTopPct);
+            heightPct = Math.min(maxAvailableHeight, Math.max(rawHeightPct, 8));
+
+            fontStyle = isCompact
+                ? 'text-[clamp(7px,0.85vw,10.5px)] leading-relaxed font-normal'
+                : isLarge
+                ? 'text-[clamp(9.5px,1.25vw,14px)] leading-relaxed font-medium'
+                : 'text-[clamp(8px,1.05vw,12px)] leading-relaxed font-normal';
+        } else {
+            // Horizontal short text (prices, labels, receipts)
+            const baseMinWidth = isCompact ? 4.5 : isLarge ? 7.5 : 5.8;
+            const charWidthRate = isCompact ? 1.5 : isLarge ? 2.3 : 1.9;
+            const minReadableWidth = Math.max(baseMinWidth, effectiveChars * charWidthRate + (isCompact ? 1.4 : isLarge ? 2.4 : 1.8));
+            const maxAvailableWidth = Math.max(5, 99.5 - rawLeftPct);
+            widthPct = Math.min(maxAvailableWidth, Math.max(rawWidthPct, minReadableWidth));
+
+            const isShortLine = rawHeightPct < (3.2 * scaleRatio);
+            const minLineHeight = isShortLine
+                ? (isCompact ? 1.9 : isLarge ? 3.0 : 2.4)
+                : (isCompact ? 2.6 : isLarge ? 4.0 : 3.2);
+            const maxAvailableHeight = Math.max(2.5, 99.5 - rawTopPct);
+            heightPct = Math.min(maxAvailableHeight, Math.max(rawHeightPct, minLineHeight));
+
+            fontStyle = isCompact
+                ? 'text-[clamp(7px,0.85vw,10px)] leading-tight font-medium'
+                : isLarge
+                ? 'text-[clamp(9px,1.3vw,15px)] leading-snug font-semibold'
+                : 'text-[clamp(7.5px,1.05vw,12px)] leading-tight font-medium';
+        }
+
+        return {
+            isVertical,
+            isSingleColumnVertical,
+            isMultiColumnVertical,
+            isHorizontalParagraph,
+            topPct: Number(rawTopPct.toFixed(2)),
+            leftPct: Number(rawLeftPct.toFixed(2)),
+            widthPct: Number(widthPct.toFixed(2)),
+            heightPct: Number(heightPct.toFixed(2)),
+            fontStyle,
+            scaleRatio,
+        };
+    };
+
     // Download combined image with rendered translated text using Canvas
     const handleDownloadImage = async () => {
         if (!imageUrl || isLoading) return;
@@ -198,7 +305,7 @@ const LensOverlayModal: React.FC<LensOverlayModalProps> = ({
             // 1. Draw original base image
             ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
-            // 2. Overlay translated blocks if global showTranslated is true
+            // 2. Overlay translated blocks using the EXACT same positioning as DOM
             if (showTranslated && blocks.length > 0) {
                 for (let i = 0; i < blocks.length; i++) {
                     const block = blocks[i];
@@ -206,16 +313,17 @@ const LensOverlayModal: React.FC<LensOverlayModalProps> = ({
                     const displayText = isFlipped ? block.sourceText : block.translatedText;
                     if (!displayText) continue;
 
-                    const [ymin, xmin, ymax, xmax] = block.box_2d;
-                    const x = (xmin / 1000) * canvas.width;
-                    const y = (ymin / 1000) * canvas.height;
-                    const w = Math.max(16, ((xmax - xmin) / 1000) * canvas.width);
-                    const h = Math.max(11, ((ymax - ymin) / 1000) * canvas.height);
+                    // Calculate layout using unified math
+                    const layout = computeBlockLayout(block, displayText, fontSizeScale);
+                    const x = (layout.leftPct / 100) * canvas.width;
+                    const y = (layout.topPct / 100) * canvas.height;
+                    const w = (layout.widthPct / 100) * canvas.width;
+                    const h = (layout.heightPct / 100) * canvas.height;
 
-                    // Draw rounded semi-opaque backdrop
+                    // Draw rounded solid backdrop
                     ctx.save();
-                    ctx.fillStyle = 'rgba(255, 255, 255, 0.94)';
-                    ctx.strokeStyle = 'rgba(200, 200, 200, 0.85)';
+                    ctx.fillStyle = '#ffffff';
+                    ctx.strokeStyle = '#cccccc';
                     ctx.lineWidth = Math.max(1, canvas.width * 0.001);
 
                     const radius = Math.min(6, Math.min(w, h) / 3);
@@ -226,14 +334,98 @@ const LensOverlayModal: React.FC<LensOverlayModalProps> = ({
 
                     // Draw text inside the box
                     ctx.fillStyle = '#0f172a'; // Slate-900
-                    ctx.textBaseline = 'middle';
-                    ctx.textAlign = 'center';
 
-                    // Estimate font size based on box height and text length
-                    const fontSize = Math.max(9, Math.min(h * 0.72, (w / (displayText.length || 1)) * 1.5));
-                    ctx.font = `bold ${fontSize}px sans-serif, system-ui`;
+                    if (layout.isSingleColumnVertical) {
+                        // 1. Single column vertical text
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'middle';
+                        const chars = Array.from(displayText);
+                        const count = Math.max(1, chars.length);
+                        const fontSize = Math.max(10, Math.min(w * 0.78, (h / count) * 0.92));
+                        ctx.font = `600 ${Math.round(fontSize * layout.scaleRatio)}px sans-serif, system-ui`;
+                        const totalH = fontSize * count;
+                        const startY = y + Math.max(2, (h - totalH) / 2) + fontSize / 2;
+                        for (let c = 0; c < chars.length; c++) {
+                            ctx.fillText(chars[c], x + w / 2, startY + c * fontSize);
+                        }
+                    } else if (layout.isMultiColumnVertical) {
+                        // 2. Multi-column vertical prose paragraph (flows top-to-bottom, columns wrap right-to-left)
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'middle';
+                        const chars = Array.from(displayText);
+                        const N = Math.max(1, chars.length);
 
-                    ctx.fillText(displayText, x + w / 2, y + h / 2, w - 4);
+                        // Padding inside the box
+                        const padX = Math.max(3, w * 0.03);
+                        const padY = Math.max(3, h * 0.03);
+                        const usableW = Math.max(10, w - padX * 2);
+                        const usableH = Math.max(10, h - padY * 2);
+
+                        // Area-based font scale: fills the box proportionally on ANY canvas resolution!
+                        const idealFontSize = Math.sqrt((usableW * usableH) / (N * 1.52));
+                        const fontSize = Math.max(10, Math.min(Math.round(idealFontSize * layout.scaleRatio), Math.floor(usableH * 0.13)));
+
+                        const colWidth = fontSize * 1.36;
+                        const charH = fontSize * 1.18;
+                        const charsPerCol = Math.max(4, Math.floor(usableH / charH));
+
+                        ctx.font = `500 ${fontSize}px sans-serif, system-ui`;
+
+                        // Start from the rightmost column center
+                        const startColCenter = x + w - padX - colWidth / 2;
+                        let curColCenter = startColCenter;
+                        let curY = y + padY + charH / 2;
+
+                        for (let c = 0; c < chars.length; c++) {
+                            const char = chars[c];
+                            if (curY + charH / 2 > y + h - padY) {
+                                // Wrap to next column on the left
+                                curColCenter -= colWidth;
+                                curY = y + padY + charH / 2;
+                                if (curColCenter < x + padX) break;
+                            }
+                            ctx.fillText(char, curColCenter, curY);
+                            curY += charH;
+                        }
+                    } else if (layout.isHorizontalParagraph) {
+                        // 3. Multi-line horizontal paragraph
+                        ctx.textAlign = 'left';
+                        ctx.textBaseline = 'top';
+                        const chars = Array.from(displayText);
+                        const padX = Math.max(4, w * 0.03);
+                        const padY = Math.max(4, h * 0.04);
+                        const usableW = Math.max(20, w - padX * 2);
+                        const usableH = Math.max(15, h - padY * 2);
+
+                        const idealF = Math.sqrt((usableW * usableH) / (chars.length * 1.45));
+                        const fontSize = Math.max(10, Math.min(Math.round(idealF * layout.scaleRatio), Math.floor(usableH * 0.28)));
+                        ctx.font = `500 ${fontSize}px sans-serif, system-ui`;
+                        const lineHeight = fontSize * 1.38;
+
+                        let curLine = '';
+                        let curY = y + padY;
+                        for (let c = 0; c < chars.length; c++) {
+                            const test = curLine + chars[c];
+                            if (ctx.measureText(test).width > usableW && c > 0) {
+                                ctx.fillText(curLine, x + padX, curY);
+                                curLine = chars[c];
+                                curY += lineHeight;
+                                if (curY + lineHeight > y + h - padY) break;
+                            } else {
+                                curLine = test;
+                            }
+                        }
+                        if (curLine && curY + lineHeight <= y + h + padY) {
+                            ctx.fillText(curLine, x + padX, curY);
+                        }
+                    } else {
+                        // 4. Short horizontal text (e.g. price, item name)
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'middle';
+                        const fontSize = Math.max(10, Math.min(h * 0.72, (w / (displayText.length || 1)) * 1.35));
+                        ctx.font = `600 ${Math.round(fontSize * layout.scaleRatio)}px sans-serif, system-ui`;
+                        ctx.fillText(displayText, x + w / 2, y + h / 2, w - 4);
+                    }
                     ctx.restore();
                 }
             }
@@ -432,7 +624,7 @@ const LensOverlayModal: React.FC<LensOverlayModalProps> = ({
                         ref={imageRef}
                         src={imageUrl}
                         alt="Lens Target"
-                        className="max-w-full max-h-[82vh] object-contain block select-none pointer-events-none"
+                        className="max-w-full max-h-[82vh] w-auto h-auto block select-none pointer-events-none"
                     />
 
                     {/* Google Lens Laser Scanning Beam during loading */}
@@ -459,23 +651,10 @@ const LensOverlayModal: React.FC<LensOverlayModalProps> = ({
 
                     {/* AR Overlays Layer (rendered directly matching image bounding boxes) */}
                     {!isLoading && showTranslated && blocks.map((block, idx) => {
-                        const [ymin, xmin, ymax, xmax] = block.box_2d;
-                        const topPct = (ymin / 10).toFixed(2);
-                        const leftPct = (xmin / 10).toFixed(2);
-                        const widthPct = Math.max(3.5, (xmax - xmin) / 10).toFixed(2);
-                        // Prevent row ballooning on receipts: use realistic row height
-                        const rawHeightPct = (ymax - ymin) / 10;
-                        const heightPct = Math.max(2.5, rawHeightPct).toFixed(2);
-
                         const isFlipped = !!flippedBlocks[idx];
                         const isSelected = selectedBlockIdx === idx;
                         const text = isFlipped ? block.sourceText : block.translatedText;
-
-                        const fontStyle = fontSizeScale === 'compact'
-                            ? 'text-[clamp(7px,0.85vw,10px)] leading-tight'
-                            : fontSizeScale === 'large'
-                            ? 'text-[clamp(9px,1.3vw,15px)] leading-snug font-semibold'
-                            : 'text-[clamp(7.5px,1.05vw,12px)] leading-tight';
+                        const layout = computeBlockLayout(block, text, fontSizeScale);
 
                         return (
                             <div
@@ -486,23 +665,44 @@ const LensOverlayModal: React.FC<LensOverlayModalProps> = ({
                                     handleToggleBlock(idx);
                                 }}
                                 style={{
-                                    top: `${topPct}%`,
-                                    left: `${leftPct}%`,
-                                    width: `${widthPct}%`,
-                                    height: `${heightPct}%`,
+                                    top: `${layout.topPct}%`,
+                                    left: `${layout.leftPct}%`,
+                                    width: `${layout.widthPct}%`,
+                                    height: `${layout.heightPct}%`,
+                                    ...(layout.isVertical ? {
+                                        writingMode: 'vertical-rl',
+                                        textOrientation: 'upright',
+                                        letterSpacing: layout.isSingleColumnVertical ? '0.04em' : '0.02em',
+                                    } : {}),
                                 }}
-                                className={`absolute flex items-center justify-center px-1 py-0.5 rounded-[3px] cursor-pointer transition-all duration-150 border select-none overflow-hidden ${
+                                className={`absolute ${
+                                    layout.isSingleColumnVertical 
+                                        ? 'flex items-center justify-center px-0.5 py-0.5' 
+                                        : layout.isMultiColumnVertical
+                                        ? 'block text-left p-1 overflow-hidden'
+                                        : layout.isHorizontalParagraph 
+                                        ? 'flex flex-col items-start justify-start p-1.5' 
+                                        : 'flex items-center justify-center px-1 py-0'
+                                } rounded-[3px] cursor-pointer transition-all duration-150 border select-none overflow-hidden ${
                                     isSelected 
                                         ? 'z-40 ring-2 ring-blue-500 shadow-xl scale-[1.03] bg-blue-50 text-slate-900 border-blue-500' 
                                         : isFlipped 
-                                        ? 'z-10 hover:z-30 bg-amber-400/95 text-black border-amber-500/80 font-medium hover:scale-[1.02] shadow-xs' 
-                                        : 'z-10 hover:z-30 bg-white/95 text-slate-900 border-slate-300/80 hover:bg-white font-medium hover:scale-[1.02] shadow-xs'
+                                        ? 'z-10 hover:z-30 bg-amber-400 text-black border-amber-500 font-medium hover:scale-[1.02] shadow-xs' 
+                                        : 'z-10 hover:z-30 bg-white text-slate-900 border-slate-300 font-medium hover:scale-[1.02] shadow-xs'
                                 }`}
                                 title={`${isFlipped ? '原文' : '譯文'} • 點擊切換`}
                             >
                                 <span 
-                                    className={`text-center break-words select-text line-clamp-2 overflow-hidden ${fontStyle} font-sans`}
-                                    style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}
+                                    className={`${
+                                        layout.isSingleColumnVertical
+                                            ? 'text-center max-h-full overflow-hidden leading-tight font-sans'
+                                            : layout.isMultiColumnVertical
+                                            ? 'block h-full max-h-full max-w-full select-text font-sans'
+                                            : layout.isHorizontalParagraph
+                                            ? 'w-full text-left break-words select-text overflow-y-auto max-h-full leading-relaxed font-sans'
+                                            : 'text-center whitespace-nowrap overflow-hidden text-ellipsis leading-none font-sans'
+                                    } ${layout.fontStyle}`}
+                                    style={!layout.isVertical ? { wordBreak: 'break-word', overflowWrap: 'break-word' } : undefined}
                                 >
                                     {text}
                                 </span>

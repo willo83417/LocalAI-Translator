@@ -189,10 +189,24 @@ CRITICAL TRANSLATION REQUIREMENT:
 
 Task instructions:
 1. Accurately detect all readable text segments/blocks in the image.
-2. For receipts, bills, menus, and tabular items: group horizontally adjacent items on the same row or line together into one logical block (e.g. "Item name + quantity + price") to maintain clean structure and prevent text blocks from overlapping vertically.
-3. For each block, return its 2D bounding box as [ymin, xmin, ymax, xmax] in normalized coordinates from 0 to 1000 (integers).
-4. Provide the extracted sourceText exactly as it appears in the image, and translate it into "${targetLang}" as translatedText.
-5. Also provide the concatenated complete "sourceText" and the complete "translatedText" in "${targetLang}".
+2. Writing Orientation Detection (CRITICAL for Google Lens AR alignment):
+   - Determine whether each text block is written vertically (縦書き, top-to-bottom columns) or horizontally (橫書き, left-to-right rows).
+   - Set "isVertical": true for ALL vertical text. This includes:
+     * Standalone vertical titles, shrine plaques, deity names, badges, and signboards.
+     * Multi-column vertical paragraphs (e.g. shrine history, pamphlet articles, poems) where text lines run from top to bottom.
+   - Set "isVertical": false for horizontal text (e.g. receipts, invoices, horizontal tables/menus, standard western text).
+3. Layout & Grouping rules:
+   - For vertical text (縦書き):
+     * Standalone titles/signs: keep each distinct vertical column as its own block with a tight vertical bounding box.
+     * Multi-column vertical prose/history paragraphs: group the related sentences together into a coherent block tightly bounding those vertical columns.
+     * Maintain the proper right-to-left reading order.
+   - For horizontal text (橫書き):
+     * On the same line, group adjacent items (e.g. "Item name + price") together into one logical block to maintain clean structure.
+     * Keep separate sub-lines as separate blocks with their own tight bounding boxes.
+     * Ensure each bounding box accurately tightly bounds its specific line so boxes do not collide vertically.
+4. For each block, return its 2D bounding box as [ymin, xmin, ymax, xmax] in normalized coordinates from 0 to 1000 (integers).
+5. Provide the extracted sourceText exactly as it appears in the image, and translate it into "${targetLang}" as translatedText.
+6. Also provide the concatenated complete "sourceText" and the complete "translatedText" in "${targetLang}".
 Return a JSON object conforming strictly to the response schema.`,
     };
 
@@ -201,7 +215,7 @@ Return a JSON object conforming strictly to the response schema.`,
             model: modelName,
             contents: { parts: [textPart, imagePart] },
             config: {
-                systemInstruction: `You are an expert OCR and translation vision assistant. Your absolute and only target translation language is "${targetLang}". You MUST translate all text found in the image exclusively into "${targetLang}". Under NO circumstances should you output English unless "${targetLang}" is explicitly English. For receipts and multi-line documents, group adjacent items on the same row into a single block to keep bounding boxes neat and non-overlapping.`,
+                systemInstruction: `You are an expert OCR and translation vision assistant like Google Lens. Your absolute and only target translation language is "${targetLang}". You MUST translate all text found in the image exclusively into "${targetLang}". Under NO circumstances should you output English unless "${targetLang}" is explicitly English. For vertical text (縦書き, such as Japanese shrine pamphlets, signs, poems), you MUST mark "isVertical": true for both single-column signs and multi-column article paragraphs. For horizontal text, mark "isVertical": false.`,
                 responseMimeType: "application/json",
                 responseSchema: {
                     type: Type.OBJECT,
@@ -216,7 +230,7 @@ Return a JSON object conforming strictly to the response schema.`,
                         },
                         blocks: {
                             type: Type.ARRAY,
-                            description: 'List of detected text regions with bounding boxes and translations.',
+                            description: 'List of detected text regions with bounding boxes, translations, and vertical orientation flag.',
                             items: {
                                 type: Type.OBJECT,
                                 properties: {
@@ -232,9 +246,13 @@ Return a JSON object conforming strictly to the response schema.`,
                                     translatedText: {
                                         type: Type.STRING,
                                         description: `Translated text in this block strictly translated into ${targetLang}`
+                                    },
+                                    isVertical: {
+                                        type: Type.BOOLEAN,
+                                        description: 'True if the original text in the image is written vertically (縦書き, top-to-bottom columns). False if written horizontally (橫書き, left-to-right rows).'
                                     }
                                 },
-                                required: ["box_2d", "sourceText", "translatedText"]
+                                required: ["box_2d", "sourceText", "translatedText", "isVertical"]
                             }
                         }
                     },
@@ -265,6 +283,7 @@ Return a JSON object conforming strictly to the response schema.`,
                     box_2d: box,
                     sourceText: String(b.sourceText || ''),
                     translatedText: String(b.translatedText || ''),
+                    isVertical: typeof b.isVertical === 'boolean' ? b.isVertical : undefined,
                 };
             }).filter((b: ImageLensBlock) => b.sourceText.trim().length > 0 || b.translatedText.trim().length > 0);
         }

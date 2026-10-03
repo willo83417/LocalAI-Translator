@@ -181,7 +181,13 @@ CRITICAL TARGET LANGUAGE: "${targetLang}".
             throw new Error('No content in OpenAI API response.');
         }
 
-        const result = JSON.parse(content);
+        let parsedContent = content.trim();
+        if (parsedContent.startsWith('```')) {
+            parsedContent = parsedContent.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+        }
+        const jsonMatch = parsedContent.match(/\{[\s\S]*\}/);
+        const jsonString = jsonMatch ? jsonMatch[0] : parsedContent;
+        const result = JSON.parse(jsonString);
         if (typeof result.sourceText === 'string' && typeof result.translatedText === 'string') {
             return result;
         } else {
@@ -224,10 +230,25 @@ CRITICAL TRANSLATION REQUIREMENT:
 
 Task instructions:
 1. Accurately detect all readable text blocks in the image.
-2. For receipts, invoices, bills, and item lists: group horizontally adjacent items on the same row or line together into one logical block (e.g. "Item name + quantity + price") to maintain clean structure and prevent text boxes from overlapping vertically.
-3. For each block, provide its 2D bounding box as [ymin, xmin, ymax, xmax] in normalized coordinates from 0 to 1000 (integers relative to image height and width).
-4. Provide the extracted sourceText and translate it into "${targetLang}" as translatedText.
-5. Provide the full concatenated "sourceText" and full "translatedText" in "${targetLang}".
+2. Writing Orientation Detection (CRITICAL for AR alignment):
+   - Determine whether each text block is written vertically (縦書き, top-to-bottom columns) or horizontally (橫書き, left-to-right rows).
+   - Set "isVertical": true for ALL vertical text:
+     * Standalone vertical titles, shrine signboards, deity names, badges, and poems.
+     * Multi-column vertical article or history paragraphs where lines run from top to bottom.
+   - Set "isVertical": false for horizontal text:
+     * Receipts, invoices, horizontal cafe/restaurant menus, tables, standard horizontal print.
+3. Layout & Grouping rules:
+   - For vertical text (縦書き):
+     * Standalone titles/signs: keep each distinct vertical column as its own block with a tight vertical bounding box.
+     * Multi-column vertical prose/history paragraphs: group the related sentences together into a coherent block tightly bounding those vertical columns.
+     * Maintain right-to-left reading order.
+   - For horizontal text (橫書き, menus, receipts, tables):
+     * On the same line, group adjacent items (e.g. "Item name + price") together into one logical block to maintain clean structure.
+     * Keep separate sub-lines (e.g. subtitle, ingredients, allergen warnings below an item) as separate blocks with their own tight bounding boxes.
+     * Ensure each bounding box accurately tightly bounds its specific line/sub-line so boxes do not collide vertically or obscure adjacent items.
+4. For each block, provide its 2D bounding box as [ymin, xmin, ymax, xmax] in normalized coordinates from 0 to 1000 (integers relative to image height and width).
+5. Provide the extracted sourceText and translate it into "${targetLang}" as translatedText.
+6. Provide the full concatenated "sourceText" and full "translatedText" in "${targetLang}".
 
 Return a single JSON object with this exact structure:
 {
@@ -237,7 +258,8 @@ Return a single JSON object with this exact structure:
     {
       "box_2d": [ymin, xmin, ymax, xmax],
       "sourceText": "detected text",
-      "translatedText": "translated text strictly in ${targetLang}"
+      "translatedText": "translated text strictly in ${targetLang}",
+      "isVertical": true
     }
   ]
 }
@@ -255,7 +277,10 @@ Do not include any other markdown formatting, explanations, or code blocks outsi
                 messages: [
                     {
                         role: 'system',
-                        content: `You are an expert OCR and translation assistant. MANDATORY RULE: The user's target language is strictly "${targetLang}". You MUST translate all extracted text exclusively into "${targetLang}". Never default to English unless the target is English. For receipts and multi-line lists, merge items on the same row/line into a single block to prevent overlapping.`
+                        content: `You are an expert OCR and translation vision assistant like Google Lens. MANDATORY RULES:
+1. Target translation language is strictly "${targetLang}". Translate all text exclusively into "${targetLang}". Never output English unless "${targetLang}" is explicitly English.
+2. For each block, set "isVertical": true if the text in the image is written vertically (縦書き, top-to-bottom columns), or false if horizontal (橫書き, left-to-right rows).
+3. For horizontal menus/receipts, group same-line items (item + price) into one block while keeping sub-lines (allergens, subtitles) in separate tight boxes to prevent overlapping.`
                     },
                     {
                         role: 'user',
@@ -287,7 +312,14 @@ Do not include any other markdown formatting, explanations, or code blocks outsi
             throw new Error('No content in OpenAI API response.');
         }
 
-        const result = JSON.parse(content);
+        let parsedContent = content.trim();
+        if (parsedContent.startsWith('```')) {
+            parsedContent = parsedContent.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+        }
+        const jsonMatch = parsedContent.match(/\{[\s\S]*\}/);
+        const jsonString = jsonMatch ? jsonMatch[0] : parsedContent;
+        const result = JSON.parse(jsonString);
+
         const sourceText = typeof result.sourceText === 'string' ? result.sourceText : '';
         const translatedText = typeof result.translatedText === 'string' ? result.translatedText : '';
         let blocks: ImageLensBlock[] = [];
@@ -307,6 +339,7 @@ Do not include any other markdown formatting, explanations, or code blocks outsi
                     box_2d: box,
                     sourceText: String(b.sourceText || ''),
                     translatedText: String(b.translatedText || ''),
+                    isVertical: typeof b.isVertical === 'boolean' ? b.isVertical : undefined,
                 };
             }).filter((b: ImageLensBlock) => b.sourceText.trim().length > 0 || b.translatedText.trim().length > 0);
         }
