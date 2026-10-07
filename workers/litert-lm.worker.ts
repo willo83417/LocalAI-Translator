@@ -1,4 +1,4 @@
-import { Engine, EngineSettings, Conversation, loadLiteRtLm, unloadLiteRtLm } from '@litert-lm/core';
+import { Engine, EngineSettings, Conversation, loadLiteRtLm, unloadLiteRtLm, SamplerType } from '@litert-lm/core';
 
 let engine: Engine | null = null;
 let conversation: Conversation | null = null;
@@ -9,19 +9,27 @@ let currentOptions: any = null;
 const createConversationWithOptions = async (eng: Engine, opts: any) => {
     const { maxTokens = 2048, topK, temperature, randomSeed } = opts || {};
     let samplerParams: any = {};
-    if (topK !== undefined) samplerParams.k = topK;
-    if (temperature !== undefined) samplerParams.temperature = temperature;
+    if (topK !== undefined) {
+        samplerParams.k = topK;
+        samplerParams.type = SamplerType.TOP_K;
+    }
+    if (temperature !== undefined) {
+        samplerParams.temperature = temperature;
+        if (!samplerParams.type) samplerParams.type = SamplerType.TOP_P;
+    }
     if (randomSeed !== undefined) samplerParams.seed = randomSeed;
 
     const conversationConfig: any = {
         preface: {
             extra_context: {
-            enable_thinking: false, // Set to false to disable thinking
+                enable_thinking: false, // Set to false to disable thinking
             }
         },
         sessionConfig: {
             maxOutputTokens: maxTokens,
-        }
+        },
+        // 0.18.0 optimizations: filter thought channel to preserve VRAM & KV Cache
+        filterChannelContentFromKvCache: true,
     };
     if (Object.keys(samplerParams).length > 0) {
         conversationConfig.sessionConfig.samplerParams = samplerParams;
@@ -47,7 +55,7 @@ const handleInit = async (payload: any) => {
             throw new Error('WebGPU is not supported.');
         }
 
-        const CDN_URL = 'https://cdn.jsdelivr.net/npm/@litert-lm/core@0.17.0/wasm';
+        const CDN_URL = 'https://cdn.jsdelivr.net/npm/@litert-lm/core@0.18.0/wasm';
         const LOCAL_URL = '/assets/wasm';
 
         try {

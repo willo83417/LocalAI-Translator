@@ -18,13 +18,13 @@ export const LANGUAGES: Language[] = [
 export const OFFLINE_MODELS = [
     { 
         name: 'Gemma-4-E2B-it (2.1 GB)', 
-        value: 'gemma-4-E2B-it-web.litertlm', 
-        url: 'https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it-web.litertlm'
+        value: 'gemma-4-E2B-it-gpu.litertlm', 
+        url: 'https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it-gpu.litertlm'
     },
-	{ 
+    { 
         name: 'Gemma-4-E4B-it (2.9 GB)', 
-        value: 'gemma-4-E4B-it-web.litertlm', 
-        url: 'https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it-web.litertlm'
+        value: 'gemma-4-E4B-it-gpu.litertlm', 
+        url: 'https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it-gpu.litertlm'
     },
     { 
         name: 'Gemma-3n-E2B (3.04 GB)', 
