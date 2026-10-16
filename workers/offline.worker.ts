@@ -119,7 +119,7 @@ self.onmessage = async (event: MessageEvent) => {
                 if (engine === 'transformers') {
                     inferenceWorker = new Worker(new URL('./transformers.worker.ts', import.meta.url), { type: 'module' });
                 } else if (engine === 'litert-lm') {
-                    inferenceWorker = new Worker(new URL('./litert-lm.worker.ts', import.meta.url));
+                    inferenceWorker = new Worker(new URL('./litert-lm.worker.ts', import.meta.url), { type: 'module' });
                 } else {
                     inferenceWorker = new Worker(new URL('./mediapipe.worker.ts?url', import.meta.url), { type: 'classic' });
                 }
@@ -143,6 +143,7 @@ self.onmessage = async (event: MessageEvent) => {
 
         case 'transcribe':
         case 'extractText':
+        case 'translate_full':
             forwardToInferenceWorker(event);
             break;
             

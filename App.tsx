@@ -16,6 +16,8 @@ import { useWebSpeech } from './hooks/useWebSpeech';
 import { usePaddleOcr } from './hooks/usePaddleOcr';
 import { deleteOcrModelCache } from './utils/db';
 import { filterVoicesForLanguage, normalizeWebSpeechLang, getLanguagePromptDescription } from './utils/speechUtils';
+import { convertOcrToLensBlocks } from './utils/ocrLensUtils';
+import { translateOfflineLensBlocks } from './services/offlineLensService';
 import type { Language, TranslationHistoryItem, CustomOfflineModel, EsearchOCROutput, EsearchOCRItem, AsrEngineType, NemotronProfile, NemotronBeamWidth, ImageLensResult } from './types';
 import { LANGUAGES, OFFLINE_MODELS, OFFLINE_MODELS_TS, ASR_MODELS, OCR_MODELS } from './constants';
 import { GeminiLiveService } from './services/geminiLiveService';
@@ -2024,9 +2026,8 @@ const App: React.FC = () => {
         //console.log('[App] handleImageCaptured triggered. OCR Status:', ocrEngineStatus, 'enableLens:', enableLens);
         setIsCameraOpen(false);
 
-        // If online mode and Lens is requested, transition immediately to LensOverlayModal with scanning animation!
-        const isOnlineLens = !isOfflineModeEnabled && isOnline && enableLens;
-        if (isOnlineLens) {
+        // Transition immediately to LensOverlayModal with scanning animation when Lens is requested!
+        if (enableLens) {
             setLensResult({
                 sourceText: '',
                 translatedText: '',
@@ -2047,37 +2048,120 @@ const App: React.FC = () => {
         await new Promise(resolve => setTimeout(resolve, 50));
 
         try {
-            // Priority 1: Use local OCR if offline OR if local OCR is active and lens is not requested
-            if (ocrEngineStatus === 'ready' && (isOfflineModeEnabled || !isOnline || !enableLens)) {
+            // Check if we should use local OCR + Offline LLM (Gemma-4 via @litert-lm/core)
+            const shouldUseLocalOcr = isOfflineModeEnabled || !isOnline;
+
+            if (shouldUseLocalOcr) {
+                if (ocrEngineStatus !== 'ready') {
+                    if (ocrEngineStatus === 'uninitialized') {
+                        const ocrModelConfig = { key: selectedOcrModel, ...OCR_MODELS[selectedOcrModel].paths };
+                        initializeOcr(ocrModelConfig);
+                        showNotification('OCR 引擎載入中，請稍候重試...', 'info');
+                    } else if (ocrEngineStatus === 'initializing') {
+                        showNotification('OCR 引擎初始化中，請稍候...', 'info');
+                    } else {
+                        showNotification('OCR 引擎狀態異常，請至設定中檢查 OCR 模型。', 'error');
+                    }
+                    setIsLensLoading(false);
+                    setIsLensModalOpen(false);
+                    setIsLoading(false);
+                    return;
+                }
+
                 const image = new Image();
                 image.src = imageDataUrl;
                 await new Promise<void>((resolve, reject) => {
-                    image.onload = () => {
-                        //console.log('[App] Local image loaded for OCR');
-                        resolve();
-                    };
-                    image.onerror = (e) => {
-                        //console.error('[App] Failed to load local image for OCR');
-                        reject(e);
-                    };
+                    image.onload = () => resolve();
+                    image.onerror = (e) => reject(e);
                 });
-    
+
                 const recognitionData = await recognize(image, (chunk: string) => {
-                    setInputText(prev => {
-                        const trimmedChunk = chunk.trim();
-                        if (!trimmedChunk) return prev;
-                        if (prev === t('notifications.processingImage') || prev === '') {
-                            return trimmedChunk + '\n';
-                        }
-                        return prev + trimmedChunk + '\n';
-                    });
+                    if (!enableLens) {
+                        setInputText(prev => {
+                            const trimmedChunk = chunk.trim();
+                            if (!trimmedChunk) return prev;
+                            if (prev === t('notifications.processingImage') || prev === '') {
+                                return trimmedChunk + '\n';
+                            }
+                            return prev + trimmedChunk + '\n';
+                        });
+                    }
                 });
+
                 if (!recognitionData) {
                     throw new Error('OCR recognition returned no data.');
                 }
+
+                if (enableLens) {
+                    const imgW = image.naturalWidth || image.width;
+                    const imgH = image.naturalHeight || image.height;
+                    const rawBlocks = convertOcrToLensBlocks(recognitionData.result, imgW, imgH);
+
+                    if (rawBlocks.length === 0) {
+                        showNotification(t('notifications.noTextInImage'), 'info');
+                        setIsLensLoading(false);
+                        setIsLensModalOpen(false);
+                        setInputText('');
+                        return;
+                    }
+
+                    if (isOfflineModelReady) {
+                        const targetLangPrompt = getLanguagePromptDescription(targetLang.code);
+                        const sourceLangPrompt = sourceLang.code === 'auto' ? 'Auto Detect' : getLanguagePromptDescription(sourceLang.code);
+                        const worker = getOrCreateWorker();
+
+                        const offlineLensRes = await translateOfflineLensBlocks(
+                            rawBlocks,
+                            sourceLangPrompt,
+                            targetLangPrompt,
+                            worker
+                        );
+
+                        setLensResult({
+                            sourceText: offlineLensRes.sourceText,
+                            translatedText: offlineLensRes.translatedText,
+                            blocks: offlineLensRes.blocks,
+                            imageUrl: imageDataUrl
+                        });
+                        setIsLensLoading(false);
+
+                        setInputText(offlineLensRes.sourceText);
+                        setTranslatedText(offlineLensRes.translatedText);
+
+                        if (offlineLensRes.sourceText.trim() || offlineLensRes.translatedText.trim()) {
+                            const newHistoryItem: TranslationHistoryItem = {
+                                id: Date.now(),
+                                inputText: offlineLensRes.sourceText,
+                                translatedText: offlineLensRes.translatedText,
+                                sourceLang,
+                                targetLang
+                            };
+                            setHistory(prevHistory => {
+                                const updatedHistory = [newHistoryItem, ...prevHistory].slice(0, 50);
+                                localStorage.setItem('translation-history', JSON.stringify(updatedHistory));
+                                return updatedHistory;
+                            });
+                        }
+                    } else {
+                        // Offline LLM (Gemma-4) not ready; show OCR boxes with original text and notify user
+                        const fullSource = rawBlocks.map(b => b.sourceText).join('\n\n');
+                        setLensResult({
+                            sourceText: fullSource,
+                            translatedText: '',
+                            blocks: rawBlocks.map(b => ({ ...b, translatedText: b.sourceText })),
+                            imageUrl: imageDataUrl
+                        });
+                        setIsLensLoading(false);
+                        setInputText(fullSource);
+                        showNotification(t('notifications.offlineModelNotReadyRecording'), 'info');
+                    }
+                    return;
+                }
+
+                // If enableLens is false: plain text translation
                 const extractedText = processOcrResult(recognitionData.result);
                 setInputText(extractedText);
-    
+
                 if (extractedText.trim()) {
                     await performTranslate(extractedText);
                 } else {
@@ -2087,84 +2171,64 @@ const App: React.FC = () => {
                 }
                 return;
             }
+
+            // Online Mode (Gemini / OpenAI API)
+            if (!isOnline) throw new Error(t('notifications.offlineImageTranslateError'));
             
-            //console.log('[App] Falling back to non-local OCR pathways...');
-    
-            // Fallback to other methods
-            if (isOfflineModeEnabled) {
-                if (!isOfflineModelReady || offlineMaxNumImages < 1) {
-                    throw new Error(t('notifications.offlineImageError'));
-                }
-                const imageBitmap = await new Promise<ImageBitmap>((resolve, reject) => {
-                    const img = new Image();
-                    img.onload = () => createImageBitmap(img).then(resolve).catch(reject);
-                    img.onerror = () => reject(new Error('Failed to load image for bitmap.'));
-                    img.src = imageDataUrl;
-                });
-    
-                const worker = getOrCreateWorker();
-                worker.postMessage({ type: 'extractText', payload: { imageBitmap } }, [imageBitmap]);
-    
-            } else { // Online mode
-                if (!isOnline) throw new Error(t('notifications.offlineImageTranslateError'));
-                
-                // Get explicit natural language description for the target language (e.g. "Traditional Chinese (繁體中文, 台灣正體)")
-                // This prevents LLMs from defaulting to English when handling multilingual receipts!
-                const targetLangPrompt = getLanguagePromptDescription(targetLang.code);
-                let fullSource = '';
-                let fullTranslated = '';
-                let lensBlocks: ImageLensResult['blocks'] = [];
+            const targetLangPrompt = getLanguagePromptDescription(targetLang.code);
+            let fullSource = '';
+            let fullTranslated = '';
+            let lensBlocks: ImageLensResult['blocks'] = [];
 
-                if (enableLens) {
-                    let lensRes: ImageLensResult;
-                    if (onlineProvider === 'openai') {
-                        if (!apiKey) throw new Error("OpenAI API Key is not set.");
-                        if (!openaiApiUrl) throw new Error("OpenAI API URL is not set.");
-                        lensRes = await translateImageWithLensOpenAI(imageDataUrl, targetLangPrompt, apiKey, textModelName, openaiApiUrl);
-                    } else {
-                        if (!apiKey) throw new Error("Gemini API Key is not set.");
-                        lensRes = await translateImageWithLensGemini(imageDataUrl, targetLangPrompt, apiKey, textModelName);
-                    }
-                    fullSource = lensRes.sourceText;
-                    fullTranslated = lensRes.translatedText;
-                    lensBlocks = lensRes.blocks || [];
-
-                    setLensResult({
-                        sourceText: fullSource,
-                        translatedText: fullTranslated,
-                        blocks: lensBlocks,
-                        imageUrl: imageDataUrl
-                    });
-                    setIsLensLoading(false);
+            if (enableLens) {
+                let lensRes: ImageLensResult;
+                if (onlineProvider === 'openai') {
+                    if (!apiKey) throw new Error("OpenAI API Key is not set.");
+                    if (!openaiApiUrl) throw new Error("OpenAI API URL is not set.");
+                    lensRes = await translateImageWithLensOpenAI(imageDataUrl, targetLangPrompt, apiKey, textModelName, openaiApiUrl);
                 } else {
-                    let result: { sourceText: string, translatedText: string };
-                    if (onlineProvider === 'openai') {
-                        if (!apiKey) throw new Error("OpenAI API Key is not set.");
-                        if (!openaiApiUrl) throw new Error("OpenAI API URL is not set.");
-                        result = await translateImageOpenAI(imageDataUrl, targetLangPrompt, apiKey, textModelName, openaiApiUrl);
-                    } else {
-                        if (!apiKey) throw new Error("Gemini API Key is not set.");
-                        result = await translateImageGemini(imageDataUrl, targetLangPrompt, apiKey, textModelName);
-                    }
-                    fullSource = result.sourceText;
-                    fullTranslated = result.translatedText;
+                    if (!apiKey) throw new Error("Gemini API Key is not set.");
+                    lensRes = await translateImageWithLensGemini(imageDataUrl, targetLangPrompt, apiKey, textModelName);
                 }
-                
-                setInputText(fullSource);
-                setTranslatedText(fullTranslated);
-    
-                if (fullSource.trim() || fullTranslated.trim()) {
-                    const newHistoryItem: TranslationHistoryItem = {
-                        id: Date.now(), inputText: fullSource, translatedText: fullTranslated, sourceLang, targetLang,
-                    };
-                    setHistory(prevHistory => {
-                        const updatedHistory = [newHistoryItem, ...prevHistory].slice(0, 50);
-                        localStorage.setItem('translation-history', JSON.stringify(updatedHistory));
-                        return updatedHistory;
-                    });
+                fullSource = lensRes.sourceText;
+                fullTranslated = lensRes.translatedText;
+                lensBlocks = lensRes.blocks || [];
+
+                setLensResult({
+                    sourceText: fullSource,
+                    translatedText: fullTranslated,
+                    blocks: lensBlocks,
+                    imageUrl: imageDataUrl
+                });
+                setIsLensLoading(false);
+            } else {
+                let result: { sourceText: string, translatedText: string };
+                if (onlineProvider === 'openai') {
+                    if (!apiKey) throw new Error("OpenAI API Key is not set.");
+                    if (!openaiApiUrl) throw new Error("OpenAI API URL is not set.");
+                    result = await translateImageOpenAI(imageDataUrl, targetLangPrompt, apiKey, textModelName, openaiApiUrl);
+                } else {
+                    if (!apiKey) throw new Error("Gemini API Key is not set.");
+                    result = await translateImageGemini(imageDataUrl, targetLangPrompt, apiKey, textModelName);
                 }
-                setIsLoading(false);
+                fullSource = result.sourceText;
+                fullTranslated = result.translatedText;
             }
+            
+            setInputText(fullSource);
+            setTranslatedText(fullTranslated);
+
+            if (fullSource.trim() || fullTranslated.trim()) {
+                const newHistoryItem: TranslationHistoryItem = {
+                    id: Date.now(), inputText: fullSource, translatedText: fullTranslated, sourceLang, targetLang,
+                };
+                setHistory(prevHistory => {
+                    const updatedHistory = [newHistoryItem, ...prevHistory].slice(0, 50);
+                    localStorage.setItem('translation-history', JSON.stringify(updatedHistory));
+                    return updatedHistory;
+                });
+            }
+            setIsLoading(false);
         } catch (err) {
             const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
             showNotification(t('notifications.imageProcessingFailed', { errorMessage }), 'error');
@@ -2173,7 +2237,28 @@ const App: React.FC = () => {
             setIsLensLoading(false);
             setIsLensModalOpen(false);
         }
-    }, [isOfflineModeEnabled, isOfflineModelReady, offlineMaxNumImages, isOnline, apiKey, modelName, textModelName, targetLang, sourceLang, showNotification, onlineProvider, openaiApiUrl, t, i18n, getOrCreateWorker, ocrEngineStatus, recognize, performTranslate]);
+    }, [
+        isOfflineModeEnabled,
+        isOfflineModelReady,
+        offlineMaxNumImages,
+        isOnline,
+        apiKey,
+        modelName,
+        textModelName,
+        targetLang,
+        sourceLang,
+        showNotification,
+        onlineProvider,
+        openaiApiUrl,
+        t,
+        i18n,
+        getOrCreateWorker,
+        ocrEngineStatus,
+        recognize,
+        performTranslate,
+        selectedOcrModel,
+        initializeOcr
+    ]);
 
     const handleSaveSettings = (
         newApiKey: string, 

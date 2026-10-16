@@ -200,7 +200,12 @@ const LensOverlayModal: React.FC<LensOverlayModalProps> = ({
         const isVertical = block.isVertical ?? (rawHeightPct > rawWidthPct * 1.25);
         const isSingleColumnVertical = isVertical && (rawWidthPct <= 10 && effectiveChars <= 25);
         const isMultiColumnVertical = isVertical && !isSingleColumnVertical;
-        const isHorizontalParagraph = !isVertical && (effectiveChars > 25 || (rawWidthPct > 15 && rawHeightPct > 8));
+        // Only classify as multi-line horizontal paragraph if text is long (>25 chars) OR
+        // the box has a paragraph-like aspect ratio (not a single wide line on a short banner image)
+        const isHorizontalParagraph = !isVertical && (
+            effectiveChars > 26 ||
+            (effectiveChars > 14 && rawWidthPct > 18 && rawHeightPct > 10 && rawWidthPct < rawHeightPct * 3.8)
+        );
 
         let widthPct: number;
         let heightPct: number;
@@ -243,30 +248,30 @@ const LensOverlayModal: React.FC<LensOverlayModalProps> = ({
             heightPct = Math.min(maxAvailableHeight, Math.max(rawHeightPct, 8));
 
             fontStyle = isCompact
-                ? 'text-[clamp(7px,0.85vw,10.5px)] leading-relaxed font-normal'
+                ? 'text-[clamp(7px,0.85vw,10.5px)] leading-snug font-normal'
                 : isLarge
-                ? 'text-[clamp(9.5px,1.25vw,14px)] leading-relaxed font-medium'
-                : 'text-[clamp(8px,1.05vw,12px)] leading-relaxed font-normal';
+                ? 'text-[clamp(9.5px,1.25vw,14px)] leading-snug font-medium'
+                : 'text-[clamp(8px,1.05vw,12px)] leading-snug font-normal';
         } else {
-            // Horizontal short text (prices, labels, receipts)
+            // Horizontal single-line text (prices, labels, menu items, single-line banners)
             const baseMinWidth = isCompact ? 4.5 : isLarge ? 7.5 : 5.8;
-            const charWidthRate = isCompact ? 1.5 : isLarge ? 2.3 : 1.9;
+            const charWidthRate = isCompact ? 1.35 : isLarge ? 2.1 : 1.7;
             const minReadableWidth = Math.max(baseMinWidth, effectiveChars * charWidthRate + (isCompact ? 1.4 : isLarge ? 2.4 : 1.8));
             const maxAvailableWidth = Math.max(5, 99.5 - rawLeftPct);
             widthPct = Math.min(maxAvailableWidth, Math.max(rawWidthPct, minReadableWidth));
 
             const isShortLine = rawHeightPct < (3.2 * scaleRatio);
             const minLineHeight = isShortLine
-                ? (isCompact ? 1.9 : isLarge ? 3.0 : 2.4)
-                : (isCompact ? 2.6 : isLarge ? 4.0 : 3.2);
+                ? (isCompact ? 2.2 : isLarge ? 3.2 : 2.6)
+                : (isCompact ? 2.8 : isLarge ? 4.2 : 3.4);
             const maxAvailableHeight = Math.max(2.5, 99.5 - rawTopPct);
             heightPct = Math.min(maxAvailableHeight, Math.max(rawHeightPct, minLineHeight));
 
             fontStyle = isCompact
-                ? 'text-[clamp(7px,0.85vw,10px)] leading-tight font-medium'
+                ? 'text-[clamp(7px,0.85vw,10px)] leading-none font-medium'
                 : isLarge
-                ? 'text-[clamp(9px,1.3vw,15px)] leading-snug font-semibold'
-                : 'text-[clamp(7.5px,1.05vw,12px)] leading-tight font-medium';
+                ? 'text-[clamp(9px,1.3vw,15px)] leading-none font-semibold'
+                : 'text-[clamp(7.5px,1.05vw,12px)] leading-none font-medium';
         }
 
         return {
