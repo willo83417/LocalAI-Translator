@@ -4,8 +4,6 @@ if (typeof (globalThis as any).SharedArrayBuffer === 'undefined') {
 }
 
 // CRITICAL: Import from 'onnxruntime-web/webgpu' (ort.webgpu.bundle.min.mjs).
-// Importing the bare 'onnxruntime-web' defaults to the wasm-only bundle, which fails to run on GPU
-// and returns flat/empty logits (argmax token 0 = '!'), causing repeated exclamation marks.
 import * as ort from 'onnxruntime-web/webgpu';
 import { toTraditionalChinese, isTraditionalChinese } from '../utils/chineseConverter';
 
@@ -49,6 +47,18 @@ const FILE_SIZES: Record<string, number> = {
     'decoder_step.int4.onnx': 354803,
     'decoder_weights.int4.data': 382035968,
 };
+
+// Fixed static mel frame buckets (multiples of conv_window = 100) to completely prevent
+// Mobile WebGPU (Adreno/Mali) from recompiling 52 layers of WGSL shaders on every utterance!
+// 400 frames = 4.0s, 800 frames = 8.0s, 1600 frames = 16.0s, 3000 frames = 30.0s
+const MEL_FRAME_BUCKETS = [400, 800, 1600, 3000];
+
+function selectMelBucket(actualFrames: number): number {
+    for (const b of MEL_FRAME_BUCKETS) {
+        if (actualFrames <= b) return b;
+    }
+    return Math.ceil(actualFrames / 100) * 100;
+}
 
 // ─── Half-precision float utilities (IEEE 754 binary16) ─────────────────────────
 const hasFloat16Array = typeof (globalThis as any).Float16Array !== 'undefined';
@@ -226,7 +236,9 @@ export interface LogMel {
 const N_FFT = 400;
 const HOP = 160;
 const N_FREQS = N_FFT / 2 + 1; // 201
+const N_FREQ_COUNT = 201;
 let dftTablesCache: { cos: Float32Array; sin: Float32Array; window: Float32Array } | null = null;
+let cachedFlatFilterbank: Float32Array | null = null;
 
 function getDftTables() {
     if (dftTablesCache) return dftTablesCache;
@@ -245,33 +257,60 @@ function getDftTables() {
     return dftTablesCache;
 }
 
-export function logMel(audio: Float32Array, filters: MelFilterbank): LogMel {
+function getFlatFilterbank(filters: MelFilterbank): Float32Array {
+    if (cachedFlatFilterbank) return cachedFlatFilterbank;
+    const nMels = filters.n_mels;
+    const fb = new Float32Array(nMels * N_FREQ_COUNT);
+    for (let m = 0; m < nMels; m++) {
+        for (let k = 0; k < N_FREQ_COUNT; k++) {
+            fb[m * N_FREQ_COUNT + k] = filters.data[m][k];
+        }
+    }
+    cachedFlatFilterbank = fb;
+    return fb;
+}
+
+export function logMel(audio: Float32Array, filters: MelFilterbank, targetBucketT?: number): LogMel {
     if (filters.n_freqs !== N_FREQS) {
         throw new Error(`mel filterbank has ${filters.n_freqs} bins, expected ${N_FREQS}`);
     }
     const { cos, sin, window } = getDftTables();
     const nMels = filters.n_mels;
-    const fb = new Float32Array(nMels * N_FREQ_COUNT);
-    for (let m = 0; m < nMels; m++) {
-        for (let k = 0; k < N_FREQ_COUNT; k++) fb[m * N_FREQ_COUNT + k] = filters.data[m][k];
-    }
+    const fb = getFlatFilterbank(filters);
+
     const pad = N_FFT / 2;
     const L = audio.length;
     const padded = new Float32Array(L + 2 * pad);
-    for (let i = 0; i < pad; i++) padded[i] = audio[pad - i]; // reflect padding
+    for (let i = 0; i < pad; i++) padded[i] = audio[Math.min(L - 1, pad - i)] || 0;
     padded.set(audio, pad);
-    for (let i = 0; i < pad; i++) padded[pad + L + i] = audio[L - 2 - i];
+    for (let i = 0; i < pad; i++) padded[pad + L + i] = audio[Math.max(0, L - 2 - i)] || 0;
 
     const nFrames = 1 + Math.floor((padded.length - N_FFT) / HOP);
-    const T = Math.max(1, nFrames - 1); // WhisperFeatureExtractor drops the last frame
+    const actualT = Math.max(1, nFrames - 1); // WhisperFeatureExtractor drops the last frame
+    const T = targetBucketT ? Math.max(actualT, targetBucketT) : selectMelBucket(actualT);
+
     const out = new Float32Array(nMels * T);
     const frame = new Float32Array(N_FFT);
     const power = new Float32Array(N_FREQ_COUNT);
     let gmax = -Infinity;
 
-    for (let t = 0; t < T; t++) {
+    // Only compute DFT on the actual spoken frames (0 .. actualT - 1)
+    for (let t = 0; t < actualT; t++) {
         const off = t * HOP;
-        for (let n = 0; n < N_FFT; n++) frame[n] = padded[off + n] * window[n];
+        let frameEnergy = 0;
+        for (let n = 0; n < N_FFT; n++) {
+            const v = padded[off + n] * window[n];
+            frame[n] = v;
+            frameEnergy += v * v;
+        }
+        // Fast path for pure silence frames
+        if (frameEnergy < 1e-12) {
+            for (let m = 0; m < nMels; m++) {
+                out[m * T + t] = -10.0;
+            }
+            if (-10.0 > gmax) gmax = -10.0;
+            continue;
+        }
         for (let k = 0; k < N_FREQ_COUNT; k++) {
             let re = 0;
             let im = 0;
@@ -295,15 +334,22 @@ export function logMel(audio: Float32Array, filters: MelFilterbank): LogMel {
 
     // Dynamic range clamp to (gmax - 8.0), scale (x + 4.0) / 4.0
     const minVal = gmax - 8.0;
-    for (let i = 0; i < out.length; i++) {
-        const clamped = Math.max(out[i], minVal);
-        out[i] = (clamped + 4.0) / 4.0;
+    const silenceFloorScaled = (Math.max(-10.0, minVal) + 4.0) / 4.0;
+
+    for (let m = 0; m < nMels; m++) {
+        const rowBase = m * T;
+        for (let t = 0; t < actualT; t++) {
+            const clamped = Math.max(out[rowBase + t], minVal);
+            out[rowBase + t] = (clamped + 4.0) / 4.0;
+        }
+        // Fill padded bucket tail frames with exact silence floor in O(1)
+        if (T > actualT) {
+            out.fill(silenceFloorScaled, rowBase + actualT, rowBase + T);
+        }
     }
 
     return { data: out, nMels, T };
 }
-
-const N_FREQ_COUNT = 201;
 
 // ─── Prompt Configuration & Language Prefix Mapping ────────────────────────────
 export interface Qwen3AsrPromptConfig {
@@ -403,6 +449,7 @@ class Qwen3AsrEngine {
     private decoderInitSession: ort.InferenceSession | null = null;
     private decoderStepSession: ort.InferenceSession | null = null;
     private encoderMelType: string = 'float32';
+    private usingGpuBufferKv: boolean = false;
 
     private isLoading = false;
     private isProcessing = false;
@@ -436,6 +483,15 @@ class Qwen3AsrEngine {
         }
     }
 
+    private async releaseSessions() {
+        try { await (this.encoderSession as any)?.release?.(); } catch {}
+        try { await (this.decoderInitSession as any)?.release?.(); } catch {}
+        try { await (this.decoderStepSession as any)?.release?.(); } catch {}
+        this.encoderSession = null;
+        this.decoderInitSession = null;
+        this.decoderStepSession = null;
+    }
+
     async load() {
         if (this.isLoading) return;
         if (this.encoderSession && this.decoderInitSession && this.decoderStepSession) {
@@ -453,7 +509,11 @@ class Qwen3AsrEngine {
                 payload: `Selected variant: ${this.variant} (shader-f16 supported: ${hasShaderF16})`
             });
 
-            // List required files
+            const encoderFileName = this.variant === 'q4f16' ? 'encoder.fp16.onnx' : 'encoder.onnx';
+            const decoderInitFileName = this.variant === 'q4f16' ? 'decoder_init.q4f16.onnx' : 'decoder_init.int4.onnx';
+            const decoderStepFileName = this.variant === 'q4f16' ? 'decoder_step.q4f16.onnx' : 'decoder_step.int4.onnx';
+            const weightsFileName = this.variant === 'q4f16' ? 'decoder_weights.q4f16.data' : 'decoder_weights.int4.data';
+
             const requiredFiles = [
                 'prompt_config.json',
                 'mel_filters.json',
@@ -461,60 +521,30 @@ class Qwen3AsrEngine {
                 'tokenizer_config.json',
                 'embed_scales.f32.bin',
                 'embed_tokens.int8.bin',
+                encoderFileName,
+                decoderInitFileName,
+                decoderStepFileName,
+                weightsFileName,
             ];
-
-            if (this.variant === 'q4f16') {
-                requiredFiles.push(
-                    'encoder.fp16.onnx',
-                    'decoder_init.q4f16.onnx',
-                    'decoder_step.q4f16.onnx',
-                    'decoder_weights.q4f16.data'
-                );
-            } else {
-                requiredFiles.push(
-                    'encoder.onnx',
-                    'decoder_init.int4.onnx',
-                    'decoder_step.int4.onnx',
-                    'decoder_weights.int4.data'
-                );
-            }
 
             const totalBytesAll = requiredFiles.reduce((acc, f) => acc + (FILE_SIZES[f] || 1000000), 0);
             let downloadedOverall = 0;
-
             const cache = await caches.open(CACHE_NAME);
-            const fileBuffers: Record<string, ArrayBuffer> = {};
 
+            // Step 1: Ensure all required files are cached in Cache Storage first WITHOUT keeping all 888MB in JS RAM at once!
             for (const file of requiredFiles) {
                 const url = `${HF_BASE_URL}${file}`;
                 const matched = await cache.match(url);
 
                 if (matched) {
-                    post({
-                        type: 'log',
-                        payload: `[Qwen3 ASR] Loaded from cache: ${file}`
-                    });
-                    fileBuffers[file] = await matched.arrayBuffer();
                     downloadedOverall += FILE_SIZES[file] || 1000000;
-                    const percent = Math.min(95, (downloadedOverall / totalBytesAll) * 100);
+                    const percent = Math.min(90, (downloadedOverall / totalBytesAll) * 100);
                     post({
                         type: 'progress',
-                        payload: { status: 'progress', file: `Loaded ${file} from cache`, progress: percent }
+                        payload: { status: 'progress', file: `Verified ${file} in cache`, progress: percent }
                     });
                 } else {
-                    post({
-                        type: 'log',
-                        payload: `[Qwen3 ASR] Downloading ${file}...`
-                    });
-                    post({
-                        type: 'progress',
-                        payload: {
-                            status: 'progress',
-                            file: `Downloading ${file}...`,
-                            progress: Math.min(95, (downloadedOverall / totalBytesAll) * 100)
-                        }
-                    });
-
+                    post({ type: 'log', payload: `[Qwen3 ASR] Downloading ${file}...` });
                     const response = await fetch(url);
                     if (!response.ok) {
                         throw new Error(`Failed to download ${file}: HTTP ${response.status}`);
@@ -525,7 +555,6 @@ class Qwen3AsrEngine {
 
                     if (!reader) {
                         const buf = await response.arrayBuffer();
-                        fileBuffers[file] = buf;
                         await cache.put(url, new Response(buf));
                         downloadedOverall += contentLength;
                     } else {
@@ -539,7 +568,7 @@ class Qwen3AsrEngine {
                                 chunks.push(value);
                                 fileDownloaded += value.length;
                                 const filePercent = contentLength > 0 ? (fileDownloaded / contentLength) * 100 : 50;
-                                const totalPercent = Math.min(95, ((downloadedOverall + fileDownloaded) / totalBytesAll) * 100);
+                                const totalPercent = Math.min(90, ((downloadedOverall + fileDownloaded) / totalBytesAll) * 100);
                                 post({
                                     type: 'progress',
                                     payload: {
@@ -557,51 +586,55 @@ class Qwen3AsrEngine {
                             totalBuf.set(chunk, offset);
                             offset += chunk.length;
                         }
-
-                        fileBuffers[file] = totalBuf.buffer;
                         await cache.put(url, new Response(totalBuf.buffer));
                         downloadedOverall += fileDownloaded;
                     }
                 }
             }
 
-            post({ type: 'progress', payload: { status: 'progress', file: 'Parsing configs and tokenizer...', progress: 95 } });
+            const readCachedBuffer = async (file: string): Promise<ArrayBuffer> => {
+                const hit = await cache.match(`${HF_BASE_URL}${file}`);
+                if (!hit) throw new Error(`Cached file ${file} missing.`);
+                return await hit.arrayBuffer();
+            };
+
+            post({ type: 'progress', payload: { status: 'progress', file: 'Parsing configs and tokenizer...', progress: 92 } });
 
             const textDecoder = new TextDecoder();
-            this.cfg = JSON.parse(textDecoder.decode(fileBuffers['prompt_config.json'])) as Qwen3AsrPromptConfig;
-            this.filters = JSON.parse(textDecoder.decode(fileBuffers['mel_filters.json'])) as MelFilterbank;
-            this.decoder = createBpeDecoder(JSON.parse(textDecoder.decode(fileBuffers['tokenizer.json'])));
+            this.cfg = JSON.parse(textDecoder.decode(await readCachedBuffer('prompt_config.json'))) as Qwen3AsrPromptConfig;
+            this.filters = JSON.parse(textDecoder.decode(await readCachedBuffer('mel_filters.json'))) as MelFilterbank;
+            getFlatFilterbank(this.filters);
+
+            // Parse tokenizer and immediately allow the raw 11MB buffer + JSON AST to be garbage-collected
+            {
+                const tokBuf = await readCachedBuffer('tokenizer.json');
+                this.decoder = createBpeDecoder(JSON.parse(textDecoder.decode(tokBuf)));
+            }
+
             this.eos = new Set(this.cfg.prompt.eos_ids);
             this.hidden = this.cfg.decoder?.hidden_size || 1024;
 
             // Load Embedding table
             const emb = this.cfg.embedding;
-            const embBytes = new Uint8Array(fileBuffers[emb.file]);
-            this.embI8 = emb.dtype === 'int8' ? new Int8Array(embBytes.buffer, embBytes.byteOffset, embBytes.byteLength) : null;
+            const embBuf = await readCachedBuffer(emb.file);
+            this.embI8 = emb.dtype === 'int8' ? new Int8Array(embBuf) : null;
             this.embScales = emb.dtype === 'int8' && emb.scales_file
-                ? new Float32Array(fileBuffers[emb.scales_file])
+                ? new Float32Array(await readCachedBuffer(emb.scales_file))
                 : null;
-            this.embF16 = emb.dtype === 'float16' ? new Uint16Array(embBytes.buffer, embBytes.byteOffset, embBytes.byteLength / 2) : null;
-            this.embF32 = emb.dtype === 'float32' ? new Float32Array(embBytes.buffer, embBytes.byteOffset, embBytes.byteLength / 4) : null;
+            this.embF16 = emb.dtype === 'float16' ? new Uint16Array(embBuf) : null;
+            this.embF32 = emb.dtype === 'float32' ? new Float32Array(embBuf) : null;
 
-            // Setup ONNX Runtime Web
+            // Setup ONNX Runtime Web (CRITICAL: set numThreads = 1 so polyfilled SharedArrayBuffer never deadlocks/throttles mobile WASM!)
             ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/';
-			ort.env.webgpu.powerPreference = 'high-performance';
+            ort.env.wasm.numThreads = 1;
+            ort.env.webgpu.powerPreference = 'high-performance';
             ort.env.debug = false;
-			ort.env.logLevel = 'error';
+            ort.env.logLevel = 'error';
 
-            post({ type: 'progress', payload: { status: 'progress', file: 'Creating WebGPU Inference Sessions...', progress: 97 } });
+            post({ type: 'progress', payload: { status: 'progress', file: 'Creating WebGPU Inference Sessions...', progress: 95 } });
 
-            const encoderFileName = this.variant === 'q4f16' ? 'encoder.fp16.onnx' : 'encoder.onnx';
-            const decoderInitFileName = this.variant === 'q4f16' ? 'decoder_init.q4f16.onnx' : 'decoder_init.int4.onnx';
-            const decoderStepFileName = this.variant === 'q4f16' ? 'decoder_step.q4f16.onnx' : 'decoder_step.int4.onnx';
-            const weightsFileName = this.variant === 'q4f16' ? 'decoder_weights.q4f16.data' : 'decoder_weights.int4.data';
-            const weightsBytes = new Uint8Array(fileBuffers[weightsFileName]);
-
-            // WebGPU Configuration matching Sokuji:
-            // Keeping KV cache in 'gpu-buffer' completely prevents CPU-GPU memory thrashing
             const gpuOpts = (extra: Record<string, unknown> = {}) => ({
-                executionProviders: ['webgpu'],
+                executionProviders: ['webgpu','wasm'],
                 graphOptimizationLevel: 'all' as const,
                 ...extra,
             });
@@ -612,23 +645,54 @@ class Qwen3AsrEngine {
                 }
             };
 
-            post({ type: 'log', payload: `Initializing WebGPU sessions with ${this.variant}...` });
-
+            // Step 2: Load Encoder & Decoder sessions sequentially, freeing raw ArrayBuffers immediately after each creation
+            // to cut peak mobile RAM by > 500 MB!
             try {
-                this.encoderSession = await ort.InferenceSession.create(fileBuffers[encoderFileName], gpuOpts());
-                this.decoderInitSession = await ort.InferenceSession.create(
-                    fileBuffers[decoderInitFileName],
-                    gpuOpts({ externalData: [{ path: weightsFileName, data: weightsBytes }], ...kvOnGpu })
-                );
-                this.decoderStepSession = await ort.InferenceSession.create(
-                    fileBuffers[decoderStepFileName],
-                    gpuOpts({ externalData: [{ path: weightsFileName, data: weightsBytes }], ...kvOnGpu })
-                );
+                {
+                    let encBuf: ArrayBuffer | null = await readCachedBuffer(encoderFileName);
+                    this.encoderSession = await ort.InferenceSession.create(encBuf, gpuOpts());
+                    encBuf = null;
+                }
+                // Yield briefly so mobile JS GC reclaims the 376MB encoder ArrayBuffer before reading 345MB decoder weights
+                await new Promise(r => setTimeout(r, 20));
+
+                {
+                    const decInitBuf = await readCachedBuffer(decoderInitFileName);
+                    const decStepBuf = await readCachedBuffer(decoderStepFileName);
+                    let weightsBytes: Uint8Array | null = new Uint8Array(await readCachedBuffer(weightsFileName));
+
+                    try {
+                        this.decoderInitSession = await ort.InferenceSession.create(
+                            decInitBuf,
+                            gpuOpts({ externalData: [{ path: weightsFileName, data: weightsBytes }], ...kvOnGpu })
+                        );
+                        this.decoderStepSession = await ort.InferenceSession.create(
+                            decStepBuf,
+                            gpuOpts({ externalData: [{ path: weightsFileName, data: weightsBytes }], ...kvOnGpu })
+                        );
+                        this.usingGpuBufferKv = true;
+                    } catch (kvErr) {
+                        console.warn('[Qwen3 ASR] gpu-buffer KV location failed, retrying WebGPU with standard buffers:', kvErr);
+                        try { await (this.decoderInitSession as any)?.release?.(); } catch {}
+                        try { await (this.decoderStepSession as any)?.release?.(); } catch {}
+                        this.decoderInitSession = await ort.InferenceSession.create(
+                            decInitBuf,
+                            gpuOpts({ externalData: [{ path: weightsFileName, data: weightsBytes }] })
+                        );
+                        this.decoderStepSession = await ort.InferenceSession.create(
+                            decStepBuf,
+                            gpuOpts({ externalData: [{ path: weightsFileName, data: weightsBytes }] })
+                        );
+                        this.usingGpuBufferKv = false;
+                    }
+                    weightsBytes = null;
+                }
+
                 this.encoderMelType = (this.encoderSession as any).inputMetadata?.[0]?.type ?? 'float32';
-                post({ type: 'log', payload: 'WebGPU sessions created successfully with GPU-buffered KV cache.' });
+                post({ type: 'log', payload: `WebGPU sessions created successfully (KV on GPU: ${this.usingGpuBufferKv}).` });
             } catch (webgpuErr: any) {
                 console.warn('[Qwen3 ASR] WebGPU session creation failed, falling back to WASM:', webgpuErr);
-                post({ type: 'log', payload: `WebGPU failed (${webgpuErr?.message || webgpuErr}), falling back to WASM...` });
+                await this.releaseSessions();
 
                 const wasmOpts = (extra: Record<string, unknown> = {}) => ({
                     executionProviders: ['wasm'],
@@ -636,22 +700,37 @@ class Qwen3AsrEngine {
                     enableCpuMemArena: true,
                     ...extra,
                 });
-                this.encoderSession = await ort.InferenceSession.create(fileBuffers[encoderFileName], wasmOpts());
-                this.decoderInitSession = await ort.InferenceSession.create(
-                    fileBuffers[decoderInitFileName],
-                    wasmOpts({ externalData: [{ path: weightsFileName, data: weightsBytes }] })
-                );
-                this.decoderStepSession = await ort.InferenceSession.create(
-                    fileBuffers[decoderStepFileName],
-                    wasmOpts({ externalData: [{ path: weightsFileName, data: weightsBytes }] })
-                );
+                {
+                    const encBuf = await readCachedBuffer(encoderFileName);
+                    this.encoderSession = await ort.InferenceSession.create(encBuf, wasmOpts());
+                }
+                {
+                    const decInitBuf = await readCachedBuffer(decoderInitFileName);
+                    const decStepBuf = await readCachedBuffer(decoderStepFileName);
+                    const weightsBytes = new Uint8Array(await readCachedBuffer(weightsFileName));
+                    this.decoderInitSession = await ort.InferenceSession.create(
+                        decInitBuf,
+                        wasmOpts({ externalData: [{ path: weightsFileName, data: weightsBytes }] })
+                    );
+                    this.decoderStepSession = await ort.InferenceSession.create(
+                        decStepBuf,
+                        wasmOpts({ externalData: [{ path: weightsFileName, data: weightsBytes }] })
+                    );
+                }
+                this.usingGpuBufferKv = false;
                 this.encoderMelType = (this.encoderSession as any).inputMetadata?.[0]?.type ?? 'float32';
             }
 
-            // WebGPU Warmup: run 1 second of silence so shaders are pre-compiled and subsequent decodes are fast!
-            post({ type: 'log', payload: 'Warming up WebGPU shaders with silence...' });
+            // Yield for GC before shader warmup
+            await new Promise(r => setTimeout(r, 20));
+
+            // Step 3: Pre-compile WebGPU Shaders for the primary 4.0s bucket (T = 400, promptLen = 74) AND 2 steps of decoderStepSession!
+            // Passing 'zh' ensures the 3-token language_prefix_ids are included so promptLen during warmup (74)
+            // is 100% identical to real speech inference!
+            post({ type: 'progress', payload: { status: 'progress', file: 'Compiling WebGPU shaders...', progress: 98 } });
+            post({ type: 'log', payload: 'Warming up WebGPU shaders for static 4s bucket + decoder step...' });
             try {
-                await this.transcribeAudioInternal(new Float32Array(16000), undefined, undefined, true);
+                await this.transcribeAudioInternal(new Float32Array(1600), 'zh', 'zh-TW', true, true);
             } catch (warmupErr) {
                 console.warn('[Qwen3 ASR] Warmup skipped:', warmupErr);
             }
@@ -661,9 +740,7 @@ class Qwen3AsrEngine {
         } catch (err: any) {
             console.error('[Qwen3 ASR Load Error]:', err);
             post({ type: 'error', payload: `Error loading Qwen3-ASR: ${err?.message || err}` });
-            this.encoderSession = null;
-            this.decoderInitSession = null;
-            this.decoderStepSession = null;
+            await this.releaseSessions();
         } finally {
             this.isLoading = false;
         }
@@ -675,19 +752,21 @@ class Qwen3AsrEngine {
             return;
         }
 
-        // If audio is too short (< 0.6s at 16kHz) and not final, skip to avoid hallucinations
-        if (!isFinal && audio.length < 9600) {
+        // If audio is too short (< 0.5s at 16kHz) and not final, skip and release lock
+        if (!isFinal && audio.length < 8000) {
+            post({ type: 'transcription-partial', payload: '' });
             return;
         }
 
         if (this.isProcessing) {
-            if (!isFinal) return; // Skip non-final frames if already busy
-            // If final request arrived while non-final is processing, abort the non-final generation immediately!
+            if (!isFinal) {
+                return;
+            }
             if (!this.currentProcessingIsFinal) {
                 this.abortCurrent = true;
             }
             while (this.isProcessing) {
-                await new Promise((res) => setTimeout(res, 10));
+                await new Promise((res) => setTimeout(res, 8));
             }
         }
 
@@ -695,7 +774,12 @@ class Qwen3AsrEngine {
         this.abortCurrent = false;
         this.currentProcessingIsFinal = isFinal;
         try {
-            await this.transcribeAudioInternal(audio, asrLanguage, promptLanguage, false, isFinal);
+            // For interim streaming, cap audio window to latest 4.0 seconds (64,000 samples)
+            // so it always hits the pre-warmed T=400 static bucket with zero shader compilation!
+            const effectiveAudio = (!isFinal && audio.length > 64000)
+                ? audio.subarray(audio.length - 64000)
+                : audio;
+            await this.transcribeAudioInternal(effectiveAudio, asrLanguage, promptLanguage, false, isFinal);
         } catch (err: any) {
             if (err?.message !== 'ABORTED') {
                 console.error('[Qwen3 ASR Transcribe Error]:', err);
@@ -705,6 +789,13 @@ class Qwen3AsrEngine {
             this.isProcessing = false;
             this.abortCurrent = false;
         }
+    }
+
+    cancel() {
+        if (this.isProcessing) {
+            this.abortCurrent = true;
+        }
+        post({ type: 'transcription-partial', payload: '' });
     }
 
     private async transcribeAudioInternal(
@@ -721,8 +812,9 @@ class Qwen3AsrEngine {
 
         const shouldConvertToTraditional = isTraditionalChinese(promptLanguage) || isTraditionalChinese(asrLanguage);
 
-        // 1. Extract Whisper-style log-mel spectrogram
-        const mel = logMel(audio, this.filters!);
+        // 1. Extract Whisper-style log-mel spectrogram padded to a fixed bucket T (400 / 800 / 1600)
+        // so Mobile WebGPU never recompiles dynamic-shape encoder or decoder_init shaders!
+        const mel = logMel(audio, this.filters!, isWarmup ? 400 : undefined);
         const melData = this.encoderMelType === 'float16' ? f32ToF16(mel.data) : mel.data;
 
         // 2. Run Encoder
@@ -730,11 +822,14 @@ class Qwen3AsrEngine {
         const encResults = await this.encoderSession!.run({ mel: melTensor });
         const af = encResults.audio_features as ort.Tensor;
         const nAudio = af.dims[1];
-
         const afF32 = af.type === 'float16' ? f16ToF32(af.data as Uint16Array) : (af.data as Float32Array);
 
-        // 3. Construct prompt tokens sequence (prefix + audio pads + suffix + language prefix)
-        const targetLang = normalizeLangForPrefix(promptLanguage || asrLanguage, this.cfg!);
+        if (this.abortCurrent && !isWarmup) {
+            throw new Error('ABORTED');
+        }
+
+        // 3. Construct prompt tokens sequence (always use a valid language prefix so promptLen is constant per bucket)
+        const targetLang = normalizeLangForPrefix(promptLanguage || asrLanguage, this.cfg!) || 'zh';
         const { ids, audioStart } = buildPromptIds(nAudio, this.cfg!, targetLang);
 
         // 4. Build prompt embeddings (dequantize text embeddings and splice audio features)
@@ -763,31 +858,59 @@ class Qwen3AsrEngine {
         };
 
         // 6. Prefill step: decoder_init
+        const initEmbedsTensor = makeEmbTensor(promptEmbeds, embType, [1, promptLen, this.hidden]);
+        const initPosTensor = makePosTensor(0, promptLen);
         const initOut = await this.decoderInitSession!.run({
-            input_embeds: makeEmbTensor(promptEmbeds, embType, [1, promptLen, this.hidden]),
-            position_ids: makePosTensor(0, promptLen),
+            input_embeds: initEmbedsTensor,
+            position_ids: initPosTensor,
         });
-
-        // out.logits in layout-v2 is already [1, 1, vocab_size] (last token)
-        let nextToken = argmax(logitsAsF32(initOut.logits as ort.Tensor));
-        const generatedIds = [nextToken];
 
         let pastK = initOut.present_keys as ort.Tensor;
         let pastV = initOut.present_values as ort.Tensor;
+
+        if (this.abortCurrent && !isWarmup) {
+            if (this.usingGpuBufferKv) {
+                try { pastK.dispose?.(); } catch {}
+                try { pastV.dispose?.(); } catch {}
+            }
+            throw new Error('ABORTED');
+        }
+
+        // out.logits in layout-v2 is already [1, 1, vocab_size] (last token)
+        const initLogitsTensor = initOut.logits as ort.Tensor;
+        let nextToken = argmax(logitsAsF32(initLogitsTensor));
+        const generatedIds = [nextToken];
+
         let pos = promptLen;
-        const maxTokens = isFinal ? Math.min(256, this.cfg!.prompt.max_new_tokens || 256) : 64;
+        const maxTokens = isWarmup ? 3 : (isFinal ? Math.min(192, this.cfg!.prompt.max_new_tokens || 192) : 28);
+        let lastEmittedPartial = '';
+
+        // Emit first token immediately if it is already a valid text token
+        if (!isWarmup && !this.eos.has(nextToken)) {
+            const { textIds } = splitGenerated(generatedIds, this.cfg!);
+            if (textIds.length > 0) {
+                const firstPartial = this.decoder!.decode(textIds).trim();
+                if (firstPartial) {
+                    lastEmittedPartial = shouldConvertToTraditional ? toTraditionalChinese(firstPartial) : firstPartial;
+                    post({ type: 'transcription-partial', payload: lastEmittedPartial });
+                    await new Promise(r => setTimeout(r, 0));
+                }
+            }
+        }
 
         // 7. Autoregressive Greedy Generation Loop
+        // Note: When isWarmup === true, we intentionally force 2 steps even if nextToken is EOS
+        // so decoderStepSession compiles all 28 layers of WebGPU shaders during load()!
         try {
-            // Pre-allocate step buffers to avoid GC pressure and repeated allocations per token
             const stepRow = new Float32Array(this.hidden);
             const posBigArray = new BigInt64Array(1);
 
-            while (!this.eos.has(nextToken) && generatedIds.length < maxTokens) {
-                if (this.abortCurrent) {
+            while ((isWarmup || !this.eos.has(nextToken)) && generatedIds.length < maxTokens) {
+                if (this.abortCurrent && !isWarmup) {
                     throw new Error('ABORTED');
                 }
-                this.embedRowInto(nextToken, stepRow, 0);
+                const tokenToEmbed = isWarmup && this.eos.has(nextToken) ? 100 : nextToken;
+                this.embedRowInto(tokenToEmbed, stepRow, 0);
                 posBigArray[0] = BigInt(pos);
 
                 const stepEmbedsTensor = makeEmbTensor(stepRow, stepEmbType, [1, 1, this.hidden]);
@@ -800,31 +923,40 @@ class Qwen3AsrEngine {
                     past_values: pastV,
                 });
 
-                // Dispose step input tensors and previous step's KV GPU buffers immediately to prevent memory growth
-                stepEmbedsTensor.dispose?.();
-                stepPosTensor.dispose?.();
-                pastK.dispose?.();
-                pastV.dispose?.();
+                // Only dispose GPU-resident KV cache tensors from the previous step
+                if (this.usingGpuBufferKv) {
+                    try { pastK.dispose?.(); } catch {}
+                    try { pastV.dispose?.(); } catch {}
+                }
 
                 pastK = stepOut.present_keys as ort.Tensor;
                 pastV = stepOut.present_values as ort.Tensor;
-                nextToken = argmax(logitsAsF32(stepOut.logits as ort.Tensor));
+                const stepLogitsTensor = stepOut.logits as ort.Tensor;
+                nextToken = argmax(logitsAsF32(stepLogitsTensor));
                 generatedIds.push(nextToken);
                 pos++;
 
-                // Emit partial progress every 4 tokens
-                if (!isWarmup && generatedIds.length > 2 && generatedIds.length % 4 === 0) {
+                // Stream every newly decoded token immediately and yield a macrotask so mobile UI repaints smoothly
+                if (!isWarmup && !this.eos.has(nextToken)) {
                     const { textIds } = splitGenerated(generatedIds, this.cfg!);
-                    const partialText = this.decoder!.decode(textIds).trim();
-                    if (partialText) {
-                        const formattedPartial = shouldConvertToTraditional ? toTraditionalChinese(partialText) : partialText;
-                        post({ type: 'transcription-partial', payload: formattedPartial });
+                    if (textIds.length > 0) {
+                        const partialText = this.decoder!.decode(textIds).trim();
+                        if (partialText) {
+                            const formattedPartial = shouldConvertToTraditional ? toTraditionalChinese(partialText) : partialText;
+                            if (formattedPartial !== lastEmittedPartial) {
+                                lastEmittedPartial = formattedPartial;
+                                post({ type: 'transcription-partial', payload: formattedPartial });
+                                await new Promise(r => setTimeout(r, 0));
+                            }
+                        }
                     }
                 }
             }
         } finally {
-            pastK.dispose?.();
-            pastV.dispose?.();
+            if (this.usingGpuBufferKv) {
+                try { pastK.dispose?.(); } catch {}
+                try { pastV.dispose?.(); } catch {}
+            }
         }
 
         if (isWarmup) return;
@@ -837,13 +969,15 @@ class Qwen3AsrEngine {
         post({ type: 'transcription', payload: { text: formattedFinal, isFinal } });
     }
 
-    unload() {
-        this.encoderSession = null;
-        this.decoderInitSession = null;
-        this.decoderStepSession = null;
+    async unload() {
+        await this.releaseSessions();
         this.decoder = null;
         this.filters = null;
         this.cfg = null;
+        this.embI8 = null;
+        this.embScales = null;
+        this.embF16 = null;
+        this.embF32 = null;
         post({ type: 'unloaded', payload: true });
     }
 }
@@ -860,9 +994,10 @@ self.onmessage = async (e: MessageEvent<WorkerMessage>) => {
             await engine.transcribe(payload.audio, payload.asrLanguage, payload.promptLanguage, payload.isFinal);
             break;
         case 'unload':
-            engine.unload();
+            await engine.unload();
             break;
         case 'cancel':
+            engine.cancel();
             break;
         default:
             break;

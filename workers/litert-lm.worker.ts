@@ -154,24 +154,45 @@ const handleUnload = async () => {
     self.postMessage({ type: 'unload_done' });
 };
 
-const performTranslation = async (text: string, sourceLang: string, targetLang: string, stream: boolean) => {
-    if (!conversation && engine) {
-        try {
-            conversation = await createConversationWithOptions(engine, currentOptions);
-        } catch (e) {
-            console.error("Failed to recreate conversation", e);
+const releaseConversation = (conv: Conversation | null) => {
+    if (!conv) return;
+    try {
+        conv.cancel();
+    } catch (_) {}
+    try {
+        if (typeof (conv as any).delete === 'function') {
+            (conv as any).delete();
+        } else if (typeof (conv as any).close === 'function') {
+            (conv as any).close();
         }
+    } catch (_) {}
+};
+
+const performTranslation = async (text: string, sourceLang: string, targetLang: string, stream: boolean) => {
+    if (!engine) throw new Error('Offline model is not initialized.');
+
+    // Cancel any lingering previous task/conversation to free WebGPU queue & KV cache immediately
+    if (currentTaskAbortController) {
+        currentTaskAbortController.abort();
+        currentTaskAbortController = null;
     }
-    if (!conversation) throw new Error('Offline model is not initialized.');
+    if (conversation) {
+        releaseConversation(conversation);
+        conversation = null;
+    }
+
+    conversation = await createConversationWithOptions(engine, currentOptions);
+    if (!conversation) throw new Error('Failed to create LiteRT-LM conversation.');
+    const activeConv = conversation;
     
     currentTaskAbortController = new AbortController();
     const signal = currentTaskAbortController.signal;
 
     return new Promise(async (resolve, reject) => {
         const handleAbort = () => {
-            if (conversation) {
-                conversation.cancel();
-                conversation = null; // Recreate on next translation
+            releaseConversation(activeConv);
+            if (conversation === activeConv) {
+                conversation = null;
             }
             reject(new DOMException('Translation cancelled.', 'AbortError'));
         };
@@ -184,7 +205,7 @@ const performTranslation = async (text: string, sourceLang: string, targetLang: 
 			let fullText = "";
 
             if (stream) {
-                const responseStream = conversation!.sendMessageStreaming(promptText);
+                const responseStream = activeConv.sendMessageStreaming(promptText);
                 for await (const chunk of responseStream) {
                     if (signal.aborted) {
                         break;
@@ -198,10 +219,12 @@ const performTranslation = async (text: string, sourceLang: string, targetLang: 
                 }
                 if (!signal.aborted) {
                     signal.removeEventListener('abort', handleAbort);
+                    releaseConversation(activeConv);
+                    if (conversation === activeConv) conversation = null;
                     resolve(fullText.trim());
                 }
             } else {
-                const response = await conversation!.sendMessage(promptText);
+                const response = await activeConv.sendMessage(promptText);
                 if (signal.aborted) return;
                 
                 for (const item of response.content) {
@@ -210,10 +233,14 @@ const performTranslation = async (text: string, sourceLang: string, targetLang: 
                     }
                 }
                 signal.removeEventListener('abort', handleAbort);
+                releaseConversation(activeConv);
+                if (conversation === activeConv) conversation = null;
                 resolve(fullText.trim());
             }
         } catch (error) {
             signal.removeEventListener('abort', handleAbort);
+            releaseConversation(activeConv);
+            if (conversation === activeConv) conversation = null;
             reject(error);
         }
     });

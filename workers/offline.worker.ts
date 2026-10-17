@@ -119,7 +119,7 @@ self.onmessage = async (event: MessageEvent) => {
                 if (engine === 'transformers') {
                     inferenceWorker = new Worker(new URL('./transformers.worker.ts', import.meta.url), { type: 'module' });
                 } else if (engine === 'litert-lm') {
-                    inferenceWorker = new Worker(new URL('./litert-lm.worker.ts', import.meta.url), { type: 'module' });
+                    inferenceWorker = new Worker(new URL('./litert-lm.worker.ts', import.meta.url));
                 } else {
                     inferenceWorker = new Worker(new URL('./mediapipe.worker.ts?url', import.meta.url), { type: 'classic' });
                 }

@@ -146,10 +146,11 @@ class Transcriber {
         const { audioData, asrLanguage, promptLanguage, isFinal } = this.processingQueue.shift()!;
         this.currentProcessingIsFinal = isFinal;
 
-        // Skip realtime processing if audio is too short (< 0.6s at 16kHz = 9600 samples)
-        // Whisper with less than 0.6s audio cannot reliably infer tokens and produces hallucinations.
-        if (!isFinal && audioData.length < 9600) {
+        // Skip realtime processing if audio is too short (< 0.5s at 16kHz = 8000 samples)
+        // Whisper with less than 0.5s audio cannot reliably infer tokens and produces hallucinations.
+        if (!isFinal && audioData.length < 8000) {
             this.isProcessing = false;
+            post({ type: 'transcription-partial', payload: '' });
             this.processQueue();
             return;
         }
@@ -161,6 +162,28 @@ class Transcriber {
             const shouldConvertToTraditional = isTraditionalChinese(promptLanguage) || isTraditionalChinese(asrLanguage);
             let fullTranscription = "";
 
+            // For non-final realtime preview on mobile, bound audio to latest 8s (128,000 samples)
+            // and avoid expensive 30s chunk overlap slicing when audio is under 30s
+            const effectiveAudio = (!isFinal && audioData.length > 128000)
+                ? audioData.subarray(audioData.length - 128000)
+                : audioData;
+
+            const streamer = new TextStreamer(tokenizer, {
+                skip_prompt: true,
+                skip_special_tokens: true,
+                callback_function: (text: string) => {
+                    if (this.abortCurrent || this.stoppingCriteria.interrupted) {
+                        throw new Error('ABORTED');
+                    }
+                    fullTranscription += text;
+                    const trimmed = fullTranscription.trim();
+                    if (trimmed) {
+                        const outputPartial = shouldConvertToTraditional ? toTraditionalChinese(trimmed) : trimmed;
+                        post({ type: 'transcription-partial', payload: outputPartial });
+                    }
+                }
+            });
+
             const generationOptions: any = {
                 language: asrLanguage?.startsWith('zh') ? 'chinese' : (asrLanguage === 'auto' ? undefined : asrLanguage),
                 task: 'transcribe',
@@ -168,26 +191,16 @@ class Transcriber {
                 repetition_penalty: 1.2, // Penalize repeating loops on incomplete audio
                 condition_on_previous_text: false, // Prevents partial hallucinations from conditioning subsequent output
                 stopping_criteria: new StoppingCriteriaList([this.stoppingCriteria]),
-                chunk_length_s: 30, // Limits memory scaling and improves continuous long-form decoding
-                stride_length_s: 5, // Adds overlap between chunks to prevent word-cutting boundaries
+                streamer,
+                max_new_tokens: isFinal ? 128 : 48,
             };
 
-            if (isFinal) {
-                // Use TextStreamer for final audio processing
-                const streamer = new TextStreamer(tokenizer, {
-                    skip_prompt: true,
-                    skip_special_tokens: true,
-                    callback_function: (text: string) => {
-                        if (this.abortCurrent || this.stoppingCriteria.interrupted) {
-                            throw new Error('ABORTED');
-                        }
-                        fullTranscription += text;
-                        const outputPartial = shouldConvertToTraditional ? toTraditionalChinese(fullTranscription) : fullTranscription;
-                        post({ type: 'transcription-partial', payload: outputPartial });
-                    }
-                });
-                generationOptions.streamer = streamer;
+            if (effectiveAudio.length > 16000 * 28) {
+                generationOptions.chunk_length_s = 30;
+                generationOptions.stride_length_s = 5;
+            }
 
+            if (isFinal) {
                 // Use the specific promptLanguage code to look up the correct prompt for final transcription
                 const promptText = PROMPT_MAP[promptLanguage];
                 if (promptText) {
@@ -197,7 +210,7 @@ class Transcriber {
                 }
             }
 
-            const output = await this.transcriber(audioData, generationOptions);
+            const output = await this.transcriber(effectiveAudio, generationOptions);
             
             if (this.abortCurrent || this.stoppingCriteria.interrupted) {
                  throw new Error('ABORTED');

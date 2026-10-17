@@ -106,14 +106,55 @@ const audioBufferToWav = (buffer: AudioBuffer): Blob => {
     return new Blob([view], { type: 'audio/wav' });
 };
 
+// Direct in-memory encoder from 16kHz mono Float32Array to WAV Blob (zero AudioContext overhead)
+const float32SamplesToWavBlob = (monoChannel: Float32Array, sampleRate: number = 16000): Blob => {
+    const numOfChan = 1;
+    const length = monoChannel.length * numOfChan * 2 + 44;
+    const bufferArray = new ArrayBuffer(length);
+    const view = new DataView(bufferArray);
+    let pos = 0;
+
+    const setUint16 = (data: number) => {
+        view.setUint16(pos, data, true);
+        pos += 2;
+    };
+    const setUint32 = (data: number) => {
+        view.setUint32(pos, data, true);
+        pos += 4;
+    };
+    const setString = (str: string) => {
+        for (let i = 0; i < str.length; i++) {
+            view.setUint8(pos + i, str.charCodeAt(i));
+        }
+        pos += str.length;
+    };
+
+    setString('RIFF');
+    setUint32(length - 8);
+    setString('WAVE');
+    setString('fmt ');
+    setUint32(16);
+    setUint16(1);
+    setUint16(numOfChan);
+    setUint32(sampleRate);
+    setUint32(sampleRate * 2 * numOfChan);
+    setUint16(numOfChan * 2);
+    setUint16(16);
+    setString('data');
+    setUint32(monoChannel.length * 2);
+
+    for (let i = 0; i < monoChannel.length; i++) {
+        const sample = Math.max(-1, Math.min(1, monoChannel[i]));
+        view.setInt16(pos, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
+        pos += 2;
+    }
+
+    return new Blob([view], { type: 'audio/wav' });
+};
+
 const processAudioToWav = async (audioBlob: Blob, noiseSuppression: boolean, gain: number): Promise<Blob> => {
     const audioData = await processAudioForTranscription(audioBlob, { noiseSuppression, gain });
-    const tempAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
-    const audioBuffer = tempAudioContext.createBuffer(1, audioData.length, 16000);
-    audioBuffer.copyToChannel(audioData, 0);
-    const pcmWavBlob = audioBufferToWav(audioBuffer);
-    await tempAudioContext.close();
-    return pcmWavBlob;
+    return float32SamplesToWavBlob(audioData, 16000);
 };
 
 // --- OCR Processing Logic ---
@@ -275,7 +316,8 @@ const App: React.FC = () => {
     });
     const [asrProfile, setAsrProfile] = useState<NemotronProfile>(() => {
         const saved = localStorage.getItem('asr-profile');
-        if (saved === 'FAST' || saved === 'NORMAL' || saved === 'BEST') {
+        if (saved === 'BEST') return 'HIGH';
+        if (saved === 'TURBO' || saved === 'FAST' || saved === 'BALANCED' || saved === 'NORMAL' || saved === 'HIGH') {
             return saved as NemotronProfile;
         }
         return 'NORMAL';
@@ -900,7 +942,10 @@ const App: React.FC = () => {
                 showNotification(t('notifications.asrModelUnloaded'), 'info');
                 break;
             case 'transcription-partial':
-                setInputText(payload);
+                isAsrProcessingRef.current = false;
+                if (typeof payload === 'string' && payload.trim()) {
+                    setInputText(payload);
+                }
                 break;
             case 'transcription':
                 isAsrProcessingRef.current = false;
@@ -1159,7 +1204,7 @@ const App: React.FC = () => {
     useEffect(() => {
         const modelToLoad = isModelDownloaded ? offlineModelName : null;
         if (isOfflineModeEnabled && modelToLoad && !isOfflineModelInitialized && !isOfflineModelInitializing) {
-            setLoadingQueue(q => [...q, 'llm']);
+            setLoadingQueue(q => q.includes('llm') ? q : [...q, 'llm']);
         }
     }, [isModelDownloaded, offlineModelName, isOfflineModeEnabled, isOfflineModelInitialized, isOfflineModelInitializing]);
 
@@ -1183,6 +1228,14 @@ const App: React.FC = () => {
         previousOfflineModelRef.current = offlineModelName;
     }, [isOfflineModeEnabled, offlineModelName, isOfflineModelInitialized, isOfflineModelInitializing]);
 
+    // Notify Nemotron worker when profile or beam width changes while already initialized
+    useEffect(() => {
+        if (isOfflineAsrEnabled && asrEngine === 'nemotron' && isAsrInitialized && !isAsrInitializing && asrWorkerRef.current) {
+            setIsAsrInitializing(true);
+            asrWorkerRef.current.postMessage({ type: 'load', payload: { asrProfile, asrBeamWidth } });
+        }
+    }, [asrProfile, asrBeamWidth]);
+
     // Queue ASR initialization
     useEffect(() => {
         if (isOfflineAsrEnabled && (asrModelId || asrEngine === 'nemotron' || asrEngine === 'qwen3') && !isAsrInitialized && !isAsrInitializing) {
@@ -1190,7 +1243,7 @@ const App: React.FC = () => {
                 const targetId = asrEngine === 'nemotron' ? 'nemotron' : (asrEngine === 'qwen3' ? 'qwen3' : asrModelId);
                 const isCached = await checkAsrModelCacheStatus(targetId);
                 if (isCached) {
-                    setLoadingQueue(q => [...q, 'asr']);
+                    setLoadingQueue(q => q.includes('asr') ? q : [...q, 'asr']);
                 }
             };
             checkAndQueue();
@@ -1200,7 +1253,7 @@ const App: React.FC = () => {
     // Queue OCR initialization
     useEffect(() => {
         if (isOcrAutoInitEnabled && ocrEngineStatus === 'uninitialized') {
-             setLoadingQueue(q => [...q, 'ocr']);
+             setLoadingQueue(q => q.includes('ocr') ? q : [...q, 'ocr']);
         }
     }, [isOcrAutoInitEnabled, ocrEngineStatus]);
 
@@ -1396,15 +1449,41 @@ const App: React.FC = () => {
         }
     };
 
-    const handleStartRecording = (onStop: (audioBlob: Blob) => void, onDataAvailable?: (audioBlob: Blob) => void, onChunkAvailable?: (audioBlob: Blob) => void) => {
+    const handleStartRecording = (
+        onStop: (audioBlob: Blob, rawSamples?: Float32Array) => void,
+        onDataAvailable?: (audioBlob: Blob, rawSamples?: Float32Array) => void,
+        onChunkAvailable?: (audioBlob: Blob, rawSamples?: Float32Array) => void,
+        preferRawFloat32: boolean = false
+    ) => {
         if (isRecording || isAstRecording) return;
 
-        navigator.mediaDevices.getUserMedia({ audio: true })
+        // WebGPU Resource Arbitration: If an offline LLM (@litert-lm/core) translation is currently running,
+        // cancel it immediately so the mobile GPU command queue is 100% free for realtime ASR!
+        if (isOfflineModeEnabled && isLoading && workerRef.current) {
+            workerRef.current.postMessage({ type: 'cancel_translation' });
+            setIsLoading(false);
+        }
+
+        isAsrProcessingRef.current = false;
+
+        navigator.mediaDevices.getUserMedia({
+            audio: {
+                channelCount: 1,
+                sampleRate: 16000,
+                echoCancellation: true,
+                noiseSuppression: isNoiseCancellationEnabled,
+                autoGainControl: true,
+            }
+        })
             .then(async stream => {
                 lastProcessedSampleIndexRef.current = 0;
-                onStopRecordingCallbackRef.current = onStop;
+                onStopRecordingCallbackRef.current = onStop as any;
 
+                const isMobileDevice = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
                 const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
+                if (audioContext.state === 'suspended') {
+                    await audioContext.resume().catch(() => {});
+                }
                 const source = audioContext.createMediaStreamSource(stream);
                 let lastNode: AudioNode = source;
 
@@ -1423,28 +1502,56 @@ const App: React.FC = () => {
                     lastNode = gainNode;
                 }
 
-                if (!globalThis.fluidVadWorkletUrl) {
+                // Upgraded Worklet v2: built-in anti-aliased downsampler to 16000Hz!
+                // Mobile browsers often ignore { sampleRate: 16000 } and run AudioContext at 48000Hz or 44100Hz.
+                // Downsampling inside the AudioWorklet guarantees every 512-sample frame is strictly 16kHz (32ms).
+                if (!(globalThis as any).fluidVadWorkletV2Url) {
                     const workletCode = `
                     class FluidVadProcessor extends AudioWorkletProcessor {
                       constructor() {
                         super();
                         this._buffer = new Float32Array(512);
                         this._fill = 0;
+                        this._resamplePos = 0;
                       }
                       process(inputs) {
                         const channel = inputs[0] && inputs[0][0];
-                        if (!channel) return true;
-                        let offset = 0;
-                        while (offset < channel.length) {
-                          const take = Math.min(this._buffer.length - this._fill, channel.length - offset);
-                          this._buffer.set(channel.subarray(offset, offset + take), this._fill);
-                          this._fill += take;
-                          offset += take;
-                          if (this._fill === this._buffer.length) {
-                            const frame = this._buffer.slice();
-                            this.port.postMessage(frame.buffer, [frame.buffer]);
-                            this._fill = 0;
+                        if (!channel || channel.length === 0) return true;
+                        const inRate = sampleRate || 16000;
+                        if (inRate === 16000) {
+                          let offset = 0;
+                          while (offset < channel.length) {
+                            const take = Math.min(this._buffer.length - this._fill, channel.length - offset);
+                            this._buffer.set(channel.subarray(offset, offset + take), this._fill);
+                            this._fill += take;
+                            offset += take;
+                            if (this._fill === this._buffer.length) {
+                              const frame = this._buffer.slice();
+                              this.port.postMessage(frame.buffer, [frame.buffer]);
+                              this._fill = 0;
+                            }
                           }
+                        } else {
+                          const ratio = inRate / 16000;
+                          let pos = this._resamplePos;
+                          while (pos < channel.length) {
+                            const idx = Math.floor(pos);
+                            const endIdx = Math.min(channel.length, Math.ceil(pos + ratio));
+                            let sum = 0;
+                            let count = 0;
+                            for (let k = idx; k < endIdx; k++) {
+                              sum += channel[k];
+                              count++;
+                            }
+                            this._buffer[this._fill++] = count > 0 ? (sum / count) : channel[idx];
+                            if (this._fill === this._buffer.length) {
+                              const frame = this._buffer.slice();
+                              this.port.postMessage(frame.buffer, [frame.buffer]);
+                              this._fill = 0;
+                            }
+                            pos += ratio;
+                          }
+                          this._resamplePos = pos - channel.length;
                         }
                         return true;
                       }
@@ -1452,23 +1559,38 @@ const App: React.FC = () => {
                     registerProcessor("fluidvad-processor", FluidVadProcessor);
                     `;
                     const blob = new Blob([workletCode], { type: 'application/javascript' });
-                    (globalThis as any).fluidVadWorkletUrl = URL.createObjectURL(blob);
+                    (globalThis as any).fluidVadWorkletV2Url = URL.createObjectURL(blob);
                 }
 
-                await audioContext.audioWorklet.addModule((globalThis as any).fluidVadWorkletUrl);
+                await audioContext.audioWorklet.addModule((globalThis as any).fluidVadWorkletV2Url);
                 
-                const wasmResponse = await fetch(fluidvadWasmUrl);
-                const wasmBuffer = await wasmResponse.arrayBuffer();
-                const vad = await createVad({ threshold: 0.5, minSilenceDuration: 1.5, maxSpeechDuration:30, speechPadding:0.4 }, { wasm: wasmBuffer });
+                // Cache FluidVAD WASM binary in global memory so mobile doesn't re-fetch on every recording
+                if (!(globalThis as any).cachedFluidVadWasmBuffer) {
+                    const wasmResponse = await fetch(fluidvadWasmUrl);
+                    (globalThis as any).cachedFluidVadWasmBuffer = await wasmResponse.arrayBuffer();
+                }
+                const vad = await createVad(
+                    {
+                        threshold: 0.5,
+                        minSilenceDuration: isMobileDevice ? 1.15 : 1.35,
+                        maxSpeechDuration: 30,
+                        speechPadding: 0.35
+                    },
+                    { wasm: (globalThis as any).cachedFluidVadWasmBuffer.slice(0) }
+                );
                 
                 const processor = new AudioWorkletNode(audioContext, "fluidvad-processor");
 
                 let accumulatedTotal: Float32Array[] = [];
-                let realtimeCounter = 0;
+                let totalSampleLength = 0;
+                let lastStreamedSampleLength = 0;
+                let hasDetectedSpeech = false;
+                let framesSinceLastStream = 0;
+                // Trigger interval: ~9 frames (288ms) for Nemotron, ~16 frames (512ms) on mobile / 12 frames (384ms) on desktop for Qwen3/Whisper
+                const streamIntervalFrames = asrEngine === 'nemotron' ? 9 : (isMobileDevice ? 16 : 12);
 
                 const mergeFloat32Arrays = (arrays: Float32Array[]): Float32Array => {
-                    const totalLength = arrays.reduce((acc, val) => acc + val.length, 0);
-                    const merged = new Float32Array(totalLength);
+                    const merged = new Float32Array(totalSampleLength);
                     let offset = 0;
                     for (const arr of arrays) {
                         merged.set(arr, offset);
@@ -1477,56 +1599,75 @@ const App: React.FC = () => {
                     return merged;
                 };
 
-                const float32ToWavBlob = (samples: Float32Array): Blob => {
-                    const buffer = audioContext.createBuffer(1, samples.length, 16000);
-                    buffer.copyToChannel(samples, 0);
-                    return audioBufferToWav(buffer);
-                };
-
                 processor.port.onmessage = (e) => {
                     const samples = new Float32Array(e.data);
                     accumulatedTotal.push(samples);
+                    totalSampleLength += samples.length;
 
                     const events = vad.push(samples);
                     for (const event of events) {
+                        if (event.isStart) {
+                            hasDetectedSpeech = true;
+                        }
                         if (!event.isStart && mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
                             mediaRecorderRef.current.stop();
+                            return;
                         }
                     }
-                    
+
                     if (vad.isSpeaking) {
-                        realtimeCounter++;
-                        if (onDataAvailable && realtimeCounter >= 16) {
-                            realtimeCounter = 0;
+                        hasDetectedSpeech = true;
+                    }
+
+                    // Stream interim chunks while speaking OR when flushing trailing speech right after speaking
+                    const hasUnstreamedSpeech = hasDetectedSpeech && (totalSampleLength - lastStreamedSampleLength >= 4096);
+                    if (vad.isSpeaking || hasUnstreamedSpeech) {
+                        framesSinceLastStream++;
+                        const activeCallback = onDataAvailable || onChunkAvailable;
+                        if (activeCallback && framesSinceLastStream >= streamIntervalFrames && !isAsrProcessingRef.current) {
+                            framesSinceLastStream = 0;
+                            lastStreamedSampleLength = totalSampleLength;
                             const merged = mergeFloat32Arrays(accumulatedTotal);
-                            const blob = float32ToWavBlob(merged);
-                            onDataAvailable(blob);
+                            if (preferRawFloat32) {
+                                activeCallback(new Blob([], { type: 'audio/wav' }), merged);
+                            } else {
+                                const blob = float32SamplesToWavBlob(merged, 16000);
+                                activeCallback(blob, merged);
+                            }
                         }
-                    } else {
-                        realtimeCounter = 0;
                     }
                 };
 
+                // Connect processor to a silent GainNode (gain = 0) before destination to prevent mic feedback on mobile speakers
+                const silentGain = audioContext.createGain();
+                silentGain.gain.value = 0;
                 lastNode.connect(processor);
-                processor.connect(audioContext.destination);
+                processor.connect(silentGain);
+                silentGain.connect(audioContext.destination);
 
                 mediaRecorderRef.current = {
                     state: 'recording',
                     stop: () => {
+                        if (!mediaRecorderRef.current || mediaRecorderRef.current.state === 'inactive') return;
                         mediaRecorderRef.current.state = 'inactive';
                         let finalBlob = new Blob([], { type: 'audio/wav' });
+                        let finalSamples = new Float32Array(0);
                         if (accumulatedTotal.length > 0) {
-                            const merged = mergeFloat32Arrays(accumulatedTotal);
-                            finalBlob = float32ToWavBlob(merged);
+                            finalSamples = mergeFloat32Arrays(accumulatedTotal);
+                            if (!preferRawFloat32) {
+                                finalBlob = float32SamplesToWavBlob(finalSamples, 16000);
+                            }
                         }
                         
-                        if (onStopRecordingCallbackRef.current) {
-                            onStopRecordingCallbackRef.current(finalBlob);
+                        const stopCb = onStopRecordingCallbackRef.current as any;
+                        if (stopCb) {
+                            stopCb(finalBlob, finalSamples);
                         }
                         
                         stream.getTracks().forEach(track => track.stop());
                         processor.disconnect();
-                        audioContext.close();
+                        silentGain.disconnect();
+                        audioContext.close().catch(() => {});
                         mediaRecorderRef.current = null;
                         onStopRecordingCallbackRef.current = null;
                         setIsRecording(false);
@@ -1676,14 +1817,16 @@ const App: React.FC = () => {
             setInputText(t('translationInput.placeholderListening'));
 
             if (isOfflineAsrEnabled) {
-                // Offline ASR Path (Whisper/Sherpa)
-                handleStartRecording(async (audioBlob) => {
+                // Offline ASR Path (Nemotron / Qwen3 / Whisper) - Direct zero-copy 16kHz Float32Array!
+                handleStartRecording(async (_audioBlob, rawSamples) => {
                     if (!isRealtimeAsrEnabled) {
                         setInputText(t('notifications.transcribing'));
                     }
                     setIsTranscribing(true);
                     try {
-                        const audioData = await processAudioForTranscription(audioBlob, { noiseSuppression: false, gain: 1.0 });
+                        const audioData = (rawSamples && rawSamples.length > 0)
+                            ? rawSamples
+                            : await processAudioForTranscription(_audioBlob, { noiseSuppression: false, gain: 1.0 });
                         if (asrWorkerRef.current) {
                             asrWorkerRef.current.postMessage({ 
                                 type: 'transcribe', 
@@ -1704,13 +1847,16 @@ const App: React.FC = () => {
                         const message = err instanceof Error ? err.message : 'Transcription failed.';
                         showNotification(message, 'error');
                     }
-                }, isRealtimeAsrEnabled ? async (audioBlob) => {
+                }, isRealtimeAsrEnabled ? async (_audioBlob, rawSamples) => {
                     if (isAsrProcessingRef.current) return;
                     try {
                         isAsrProcessingRef.current = true;
-                        const audioData = await processAudioForTranscription(audioBlob, { noiseSuppression: false, gain: 1.0 });
-                        // Ignore fragments shorter than 0.8s (12800 samples at 16kHz) to avoid Whisper hallucinations on noise
-                        if (audioData.length < 12800) {
+                        const audioData = (rawSamples && rawSamples.length > 0)
+                            ? rawSamples
+                            : await processAudioForTranscription(_audioBlob, { noiseSuppression: false, gain: 1.0 });
+                        // Minimum samples check: 4800 samples (0.3s) for Nemotron, 8000 samples (0.5s) for Qwen3/Whisper
+                        const minSamples = asrEngine === 'nemotron' ? 4800 : 8000;
+                        if (audioData.length < minSamples) {
                             isAsrProcessingRef.current = false;
                             return;
                         }
@@ -1731,7 +1877,7 @@ const App: React.FC = () => {
                         console.error(err);
                         isAsrProcessingRef.current = false;
                     }
-                } : undefined);
+                } : undefined, undefined, true);
             } else if (isWebSpeechApiEnabled) { 
                 webSpeech.startRecognition(sourceLang.code);
             } else if (isOfflineModeEnabled && offlineSupportAudio) {
@@ -1739,13 +1885,10 @@ const App: React.FC = () => {
                 if (isOfflineModelReady) {
                      setInputText(t('notifications.transcribing'));
                      setIsTranscribing(true);
-                     handleStartRecording(async (audioBlob) => {
-                        const audioData = await processAudioForTranscription(audioBlob, { noiseSuppression: false, gain: 1.0 }); 
-                        const tempAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
-                        const audioBuffer = tempAudioContext.createBuffer(1, audioData.length, 16000);
-                        audioBuffer.copyToChannel(audioData, 0);
-                        const pcmWavBlob = audioBufferToWav(audioBuffer);
-                        await tempAudioContext.close();
+                     handleStartRecording(async (audioBlob, rawSamples) => {
+                        const pcmWavBlob = (rawSamples && rawSamples.length > 0)
+                            ? float32SamplesToWavBlob(rawSamples, 16000)
+                            : audioBlob;
                         
                         const worker = getOrCreateWorker();
                         worker.postMessage({ 
@@ -1756,26 +1899,19 @@ const App: React.FC = () => {
                                 isStream: false
                             } 
                         });
-                     }, undefined, offlineAudioRealtime ? async (audioBlob) => {
-                        if (isAsrProcessingRef.current) return;
+                     }, undefined, offlineAudioRealtime ? async (_audioBlob, rawSamples) => {
+                        if (isAsrProcessingRef.current || !rawSamples) return;
                         try {
                             isAsrProcessingRef.current = true;
-                            const audioData = await processAudioForTranscription(audioBlob, { noiseSuppression: false, gain: 1.0 }); 
-                            
-                            const newAudioData = audioData.slice(lastProcessedSampleIndexRef.current);
-                            lastProcessedSampleIndexRef.current = audioData.length;
+                            const newAudioData = rawSamples.subarray(lastProcessedSampleIndexRef.current);
+                            lastProcessedSampleIndexRef.current = rawSamples.length;
 
                             if (newAudioData.length === 0) {
                                 isAsrProcessingRef.current = false;
                                 return;
                             }
 
-                            const tempAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
-                            const audioBuffer = tempAudioContext.createBuffer(1, newAudioData.length, 16000);
-                            audioBuffer.copyToChannel(newAudioData, 0);
-                            const pcmWavBlob = audioBufferToWav(audioBuffer);
-                            await tempAudioContext.close();
-                            
+                            const pcmWavBlob = float32SamplesToWavBlob(newAudioData, 16000);
                             const worker = getOrCreateWorker();
                             worker.postMessage({ 
                                 type: 'transcribe', 
@@ -1789,7 +1925,7 @@ const App: React.FC = () => {
                             console.error(err);
                             isAsrProcessingRef.current = false;
                         }
-                     } : undefined);
+                     } : undefined, true);
                 } else {
                      showNotification(t('notifications.offlineModelNotReadyRecording'), 'error');
                      setIsRecording(false);
@@ -1801,14 +1937,13 @@ const App: React.FC = () => {
                     const controller = new AbortController();
                     audioAbortControllerRef.current = controller;
                     try {
-                        const processedBlob = await processAudioToWav(audioBlob, false, 1.0);
                         let transcribedText = '';
                         if (onlineProvider === 'openai') {
                             const langCode = sourceLang.code.split('-')[0];
-                            transcribedText = await transcribeAudioOpenAI(processedBlob, langCode, apiKey, openaiApiUrl, controller.signal);
+                            transcribedText = await transcribeAudioOpenAI(audioBlob, langCode, apiKey, openaiApiUrl, controller.signal);
                         } else {
                             const langName = sourceLang.code === 'auto' ? 'Auto Detect' : sourceLang.code;
-                            transcribedText = await transcribeAudioGemini(processedBlob, langName, apiKey, textModelName, controller.signal);
+                            transcribedText = await transcribeAudioGemini(audioBlob, langName, apiKey, textModelName, controller.signal);
                         }
                         setInputText(transcribedText);
                     } catch (err) {
@@ -1822,7 +1957,7 @@ const App: React.FC = () => {
                 });
             }
         }
-    }, [isRecording, isAstRecording, showNotification, t, sourceLang, targetLang, isOfflineAsrEnabled, isRealtimeAsrEnabled, webSpeech, isNoiseCancellationEnabled, audioGainValue, isWebSpeechApiEnabled, onlineProvider, apiKey, openaiApiUrl, modelName, isOfflineModeEnabled, isOfflineModelReady, offlineSupportAudio, getOrCreateWorker, i18n, isGeminiLiveModel, liveServiceRef]);
+    }, [isRecording, isAstRecording, showNotification, t, sourceLang, targetLang, isOfflineAsrEnabled, isRealtimeAsrEnabled, asrEngine, webSpeech, isNoiseCancellationEnabled, audioGainValue, isWebSpeechApiEnabled, onlineProvider, apiKey, openaiApiUrl, modelName, isOfflineModeEnabled, isLoading, isOfflineModelReady, offlineSupportAudio, offlineAudioRealtime, getOrCreateWorker, i18n, isGeminiLiveModel, liveServiceRef]);
 
     const handleToggleAstRecording = useCallback(() => {
         if (isGeminiLiveModel) {
@@ -1870,13 +2005,15 @@ const App: React.FC = () => {
             isReverseTranslateRef.current = true;
             
             if (isOfflineAsrEnabled) {
-                 handleStartRecording(async (audioBlob) => {
+                 handleStartRecording(async (_audioBlob, rawSamples) => {
                     if (!isRealtimeAsrEnabled) {
                         setInputText(t('notifications.transcribing'));
                     }
                     setIsTranscribing(true);
                     try {
-                        const audioData = await processAudioForTranscription(audioBlob, { noiseSuppression: false, gain: 1.0 });
+                        const audioData = (rawSamples && rawSamples.length > 0)
+                            ? rawSamples
+                            : await processAudioForTranscription(_audioBlob, { noiseSuppression: false, gain: 1.0 });
                         if (asrWorkerRef.current) {
                             asrWorkerRef.current.postMessage({ 
                                 type: 'transcribe', 
@@ -1898,13 +2035,15 @@ const App: React.FC = () => {
                         const message = err instanceof Error ? err.message : 'Transcription failed.';
                         showNotification(message, 'error');
                     }
-                }, isRealtimeAsrEnabled ? async (audioBlob) => {
+                }, isRealtimeAsrEnabled ? async (_audioBlob, rawSamples) => {
                     if (isAsrProcessingRef.current) return;
                     try {
                         isAsrProcessingRef.current = true;
-                        const audioData = await processAudioForTranscription(audioBlob, { noiseSuppression: false, gain: 1.0 });
-                        // Ignore fragments shorter than 0.8s (12800 samples at 16kHz) to avoid Whisper hallucinations on noise
-                        if (audioData.length < 12800) {
+                        const audioData = (rawSamples && rawSamples.length > 0)
+                            ? rawSamples
+                            : await processAudioForTranscription(_audioBlob, { noiseSuppression: false, gain: 1.0 });
+                        const minSamples = asrEngine === 'nemotron' ? 4800 : 8000;
+                        if (audioData.length < minSamples) {
                             isAsrProcessingRef.current = false;
                             return;
                         }
@@ -1925,7 +2064,7 @@ const App: React.FC = () => {
                         console.error(err);
                         isAsrProcessingRef.current = false;
                     }
-                } : undefined);
+                } : undefined, undefined, true);
             } else if (isWebSpeechApiEnabled) {
                 webSpeech.startRecognition(targetLang.code);
             } else if (isOfflineModeEnabled && offlineSupportAudio) {
@@ -1933,13 +2072,10 @@ const App: React.FC = () => {
                     setIsAwaitingAstTranslation(true);
                     setInputText(t('notifications.transcribing'));
                     setIsTranscribing(true);
-                    handleStartRecording(async (audioBlob) => {
-                       const audioData = await processAudioForTranscription(audioBlob, { noiseSuppression: false, gain: 1.0 }); 
-                       const tempAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
-                       const audioBuffer = tempAudioContext.createBuffer(1, audioData.length, 16000);
-                       audioBuffer.copyToChannel(audioData, 0);
-                       const pcmWavBlob = audioBufferToWav(audioBuffer);
-                       await tempAudioContext.close();
+                    handleStartRecording(async (audioBlob, rawSamples) => {
+                       const pcmWavBlob = (rawSamples && rawSamples.length > 0)
+                           ? float32SamplesToWavBlob(rawSamples, 16000)
+                           : audioBlob;
                        
                        const worker = getOrCreateWorker();
                        worker.postMessage({ 
@@ -1950,26 +2086,19 @@ const App: React.FC = () => {
                                isStream: false
                            } 
                        });
-                    }, undefined, offlineAudioRealtime ? async (audioBlob) => {
-                       if (isAsrProcessingRef.current) return;
+                    }, undefined, offlineAudioRealtime ? async (_audioBlob, rawSamples) => {
+                       if (isAsrProcessingRef.current || !rawSamples) return;
                        try {
                            isAsrProcessingRef.current = true;
-                           const audioData = await processAudioForTranscription(audioBlob, { noiseSuppression: false, gain: 1.0 }); 
-                           
-                           const newAudioData = audioData.slice(lastProcessedSampleIndexRef.current);
-                           lastProcessedSampleIndexRef.current = audioData.length;
+                           const newAudioData = rawSamples.subarray(lastProcessedSampleIndexRef.current);
+                           lastProcessedSampleIndexRef.current = rawSamples.length;
 
                            if (newAudioData.length === 0) {
                                isAsrProcessingRef.current = false;
                                return;
                            }
 
-                           const tempAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
-                           const audioBuffer = tempAudioContext.createBuffer(1, newAudioData.length, 16000);
-                           audioBuffer.copyToChannel(newAudioData, 0);
-                           const pcmWavBlob = audioBufferToWav(audioBuffer);
-                           await tempAudioContext.close();
-                           
+                           const pcmWavBlob = float32SamplesToWavBlob(newAudioData, 16000);
                            const worker = getOrCreateWorker();
                            worker.postMessage({ 
                                type: 'transcribe', 
@@ -1983,7 +2112,7 @@ const App: React.FC = () => {
                            console.error(err);
                            isAsrProcessingRef.current = false;
                        }
-                    } : undefined);
+                    } : undefined, true);
                } else {
                     showNotification(t('notifications.offlineModelNotReadyRecording'), 'error');
                     setIsAstRecording(false);
@@ -1995,14 +2124,13 @@ const App: React.FC = () => {
                     const controller = new AbortController();
                     audioAbortControllerRef.current = controller;
                     try {
-                        const processedBlob = await processAudioToWav(audioBlob, false, 1.0);
                         let transcribedText = '';
                         if (onlineProvider === 'openai') {
                             const langCode = targetLang.code.split('-')[0];
-                            transcribedText = await transcribeAudioOpenAI(processedBlob, langCode, apiKey, openaiApiUrl, controller.signal);
+                            transcribedText = await transcribeAudioOpenAI(audioBlob, langCode, apiKey, openaiApiUrl, controller.signal);
                         } else {
                             const langName = targetLang.code;
-                            transcribedText = await transcribeAudioGemini(processedBlob, langName, apiKey, textModelName, controller.signal);
+                            transcribedText = await transcribeAudioGemini(audioBlob, langName, apiKey, textModelName, controller.signal);
                         }
                         setInputText(transcribedText);
                         if (transcribedText.trim()) {
@@ -2020,7 +2148,7 @@ const App: React.FC = () => {
                 });
             }
         }
-    }, [isAstRecording, isRecording, sourceLang, targetLang, showNotification, t, isOfflineAsrEnabled, isRealtimeAsrEnabled, webSpeech, isNoiseCancellationEnabled, audioGainValue, isWebSpeechApiEnabled, onlineProvider, apiKey, openaiApiUrl, modelName, isOfflineModeEnabled, offlineSupportAudio, isOfflineModelReady, getOrCreateWorker, performReverseTranslate, i18n, isGeminiLiveModel, liveServiceRef]);
+    }, [isAstRecording, isRecording, sourceLang, targetLang, showNotification, t, isOfflineAsrEnabled, isRealtimeAsrEnabled, asrEngine, webSpeech, isNoiseCancellationEnabled, audioGainValue, isWebSpeechApiEnabled, onlineProvider, apiKey, openaiApiUrl, modelName, isOfflineModeEnabled, isLoading, offlineSupportAudio, offlineAudioRealtime, isOfflineModelReady, getOrCreateWorker, performReverseTranslate, i18n, isGeminiLiveModel, liveServiceRef]);
 
     const handleImageCaptured = useCallback(async (imageDataUrl: string, enableLens: boolean = true) => {
         //console.log('[App] handleImageCaptured triggered. OCR Status:', ocrEngineStatus, 'enableLens:', enableLens);
