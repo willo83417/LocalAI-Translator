@@ -2,6 +2,6 @@ let e=null,t=`mediapipe`,n=null;const r=()=>{e&&(e.onmessage=e=>{let{type:t,payl
 /* @vite-ignore */
 `/LocalAI-Translator/assets/transformers.worker-fMfa9AkK.js`,``+import.meta.url),{type:`module`}):l===`litert-lm`?new Worker(new URL(
 /* @vite-ignore */
-`/LocalAI-Translator/assets/litert-lm.worker-q26521si.js`,``+import.meta.url)):new Worker(new URL(
+`/LocalAI-Translator/assets/litert-lm.worker-CVkpIq8Y.js`,``+import.meta.url)):new Worker(new URL(
 /* @vite-ignore */
 `/LocalAI-Translator/assets/mediapipe.worker-kcph_mUz.js`,``+import.meta.url),{type:`classic`}),t=l,r()),i(n);break;case`unload`:e?(console.log(`Controller: Forwarding unload command to inference worker for graceful shutdown.`),e.postMessage({type:`unload`})):(console.log(`Controller: Unload called but no inference worker exists.`),self.postMessage({type:`unload_done`}));break;case`transcribe`:case`extractText`:case`translate_full`:i(n);break;case`translate`:await a(c);break;case`cancel_translation`:o();break;default:console.warn(`Unknown controller worker message type: ${s}`)}};
