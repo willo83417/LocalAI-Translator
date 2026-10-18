@@ -48,20 +48,32 @@ const FILE_SIZES: Record<string, number> = {
     'decoder_weights.int4.data': 382035968,
 };
 
-// Fixed static mel frame buckets (multiples of conv_window = 100) to completely prevent
-// Mobile WebGPU (Adreno/Mali) from recompiling 52 layers of WGSL shaders on every utterance!
-// 400 frames = 4.0s, 800 frames = 8.0s, 1600 frames = 16.0s, 3000 frames = 30.0s
-const MEL_FRAME_BUCKETS = [400, 800, 1600, 3000];
 
-function selectMelBucket(actualFrames: number): number {
-    for (const b of MEL_FRAME_BUCKETS) {
-        if (actualFrames <= b) return b;
-    }
-    return Math.ceil(actualFrames / 100) * 100;
-}
+// Fixed static 3.0-second mel frame window (300 frames = 3 * CONV_WINDOW(100) = 48,000 samples).
+// Locking EVERY encoder & decoder_init execution to T = 300 guarantees 100% WebGPU shader cache hits
+// on Mobile (Adreno/Mali) so shaders compiled during warmup are never recompiled during live speech!
+const STATIC_MEL_FRAMES = 300;
+const MAX_SEGMENT_SAMPLES = STATIC_MEL_FRAMES * 160; // 48,000 samples (3.0s)
 
 // ─── Half-precision float utilities (IEEE 754 binary16) ─────────────────────────
 const hasFloat16Array = typeof (globalThis as any).Float16Array !== 'undefined';
+
+// Precomputed 65,536-entry FP16 -> FP32 lookup table for instant O(1) conversion
+// and zero-allocation argmax over 151,936 vocab logits on Mobile!
+const F16_TO_F32_TABLE = (() => {
+    const tbl = new Float32Array(65536);
+    for (let h = 0; h < 65536; h++) {
+        const s = h & 0x8000 ? -1 : 1;
+        const e = (h >> 10) & 0x1f;
+        const f = h & 0x3ff;
+        tbl[h] = e === 0
+            ? s * Math.pow(2, -14) * (f / 1024)
+            : e === 31
+                ? (f ? NaN : s * Infinity)
+                : s * Math.pow(2, e - 15) * (1 + f / 1024);
+    }
+    return tbl;
+})();
 
 function f32ToF16Fallback(src: Float32Array): Uint16Array {
     const out = new Uint16Array(src.length);
@@ -112,33 +124,75 @@ function f32ToF16(src: Float32Array): Uint16Array {
     return f32ToF16Fallback(src);
 }
 
-function f16ToF32(src: Uint16Array): Float32Array {
+function f16ToF32(src: ArrayBufferView): Float32Array {
     if (hasFloat16Array) {
         const F16 = (globalThis as any).Float16Array;
-        return new Float32Array(new F16(src.buffer, src.byteOffset, src.length));
+        return new Float32Array(new F16(src.buffer, src.byteOffset, src.byteLength >>> 1));
     }
-    const out = new Float32Array(src.length);
-    for (let i = 0; i < src.length; i++) {
-        const h = src[i];
-        const s = h & 0x8000 ? -1 : 1;
-        const e = (h >> 10) & 0x1f;
-        const f = h & 0x3ff;
-        out[i] = e === 0 ? s * Math.pow(2, -14) * (f / 1024) : e === 31 ? (f ? NaN : s * Infinity) : s * Math.pow(2, e - 15) * (1 + f / 1024);
+    const u16 = src instanceof Uint16Array
+        ? src
+        : new Uint16Array(src.buffer, src.byteOffset, src.byteLength >>> 1);
+    const out = new Float32Array(u16.length);
+    for (let i = 0; i < u16.length; i++) {
+        out[i] = F16_TO_F32_TABLE[u16[i]];
     }
     return out;
 }
 
 function logitsAsF32(t: ort.Tensor): Float32Array {
-    if (t.type === 'float16') return f16ToF32(t.data as Uint16Array);
+    if (t.type === 'float16') return f16ToF32(t.data as ArrayBufferView);
     return t.data instanceof Float32Array ? t.data : Float32Array.from(t.data as ArrayLike<number>);
 }
 
-function argmax(a: ArrayLike<number>): number {
+function argmaxLogits(t: ort.Tensor): number {
+    const a = logitsAsF32(t);
     let best = 0;
+    let bestVal = a[0];
     for (let i = 1; i < a.length; i++) {
-        if (a[i] > a[best]) best = i;
+        if (a[i] > bestVal) {
+            bestVal = a[i];
+            best = i;
+        }
     }
     return best;
+}
+
+// Check if an audio slice contains actual speech energy (prevents re-running LLM 3x during 1.35s VAD silence hangover!)
+function hasSpeechEnergy(samples: Float32Array, threshold: number = 0.007): boolean {
+    if (samples.length < 400) return false;
+    const win = 800; // 50ms window at 16kHz
+    for (let start = 0; start < samples.length; start += win) {
+        const end = Math.min(samples.length, start + win);
+        let sumSq = 0;
+        for (let i = start; i < end; i++) {
+            const v = samples[i];
+            sumSq += v * v;
+        }
+        if (Math.sqrt(sumSq / (end - start)) >= threshold) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Trim trailing silence beyond 0.2s (3200 samples) so Encoder & Decoder never waste cycles on VAD hangover silence
+function trimTrailingSilence(samples: Float32Array, threshold: number = 0.006): Float32Array {
+    const win = 800; // 50ms
+    let lastActiveEnd = samples.length;
+    while (lastActiveEnd > 4800) {
+        const start = Math.max(0, lastActiveEnd - win);
+        let sumSq = 0;
+        for (let i = start; i < lastActiveEnd; i++) {
+            const v = samples[i];
+            sumSq += v * v;
+        }
+        if (Math.sqrt(sumSq / (lastActiveEnd - start)) >= threshold) {
+            break;
+        }
+        lastActiveEnd = start;
+    }
+    const paddedEnd = Math.min(samples.length, lastActiveEnd + 3200); // keep 0.2s trailing padding
+    return paddedEnd < samples.length ? samples.subarray(0, paddedEnd) : samples;
 }
 
 // ─── Minimal Byte-Level BPE Decoder (Matching Sokuji) ───────────────────────────
@@ -231,6 +285,7 @@ export interface LogMel {
     data: Float32Array;
     nMels: number;
     T: number;
+    actualT: number;
 }
 
 const N_FFT = 400;
@@ -270,7 +325,7 @@ function getFlatFilterbank(filters: MelFilterbank): Float32Array {
     return fb;
 }
 
-export function logMel(audio: Float32Array, filters: MelFilterbank, targetBucketT?: number): LogMel {
+export function logMel(audio: Float32Array, filters: MelFilterbank): LogMel {
     if (filters.n_freqs !== N_FREQS) {
         throw new Error(`mel filterbank has ${filters.n_freqs} bins, expected ${N_FREQS}`);
     }
@@ -286,31 +341,16 @@ export function logMel(audio: Float32Array, filters: MelFilterbank, targetBucket
     for (let i = 0; i < pad; i++) padded[pad + L + i] = audio[Math.max(0, L - 2 - i)] || 0;
 
     const nFrames = 1 + Math.floor((padded.length - N_FFT) / HOP);
-    const actualT = Math.max(1, nFrames - 1); // WhisperFeatureExtractor drops the last frame
-    const T = targetBucketT ? Math.max(actualT, targetBucketT) : selectMelBucket(actualT);
+    const T = Math.max(1, nFrames - 1); // drop_last_frame = true
 
     const out = new Float32Array(nMels * T);
     const frame = new Float32Array(N_FFT);
     const power = new Float32Array(N_FREQ_COUNT);
     let gmax = -Infinity;
 
-    // Only compute DFT on the actual spoken frames (0 .. actualT - 1)
-    for (let t = 0; t < actualT; t++) {
+    for (let t = 0; t < T; t++) {
         const off = t * HOP;
-        let frameEnergy = 0;
-        for (let n = 0; n < N_FFT; n++) {
-            const v = padded[off + n] * window[n];
-            frame[n] = v;
-            frameEnergy += v * v;
-        }
-        // Fast path for pure silence frames
-        if (frameEnergy < 1e-12) {
-            for (let m = 0; m < nMels; m++) {
-                out[m * T + t] = -10.0;
-            }
-            if (-10.0 > gmax) gmax = -10.0;
-            continue;
-        }
+        for (let n = 0; n < N_FFT; n++) frame[n] = padded[off + n] * window[n];
         for (let k = 0; k < N_FREQ_COUNT; k++) {
             let re = 0;
             let im = 0;
@@ -326,29 +366,20 @@ export function logMel(audio: Float32Array, filters: MelFilterbank, targetBucket
             let sum = 0;
             const fbase = m * N_FREQ_COUNT;
             for (let k = 0; k < N_FREQ_COUNT; k++) sum += fb[fbase + k] * power[k];
-            const val = Math.log10(Math.max(sum, 1e-10));
-            out[m * T + t] = val;
-            if (val > gmax) gmax = val;
+            const v = Math.log10(Math.max(sum, 1e-10));
+            out[m * T + t] = v;
+            if (v > gmax) gmax = v;
         }
     }
 
     // Dynamic range clamp to (gmax - 8.0), scale (x + 4.0) / 4.0
     const minVal = gmax - 8.0;
-    const silenceFloorScaled = (Math.max(-10.0, minVal) + 4.0) / 4.0;
-
-    for (let m = 0; m < nMels; m++) {
-        const rowBase = m * T;
-        for (let t = 0; t < actualT; t++) {
-            const clamped = Math.max(out[rowBase + t], minVal);
-            out[rowBase + t] = (clamped + 4.0) / 4.0;
-        }
-        // Fill padded bucket tail frames with exact silence floor in O(1)
-        if (T > actualT) {
-            out.fill(silenceFloorScaled, rowBase + actualT, rowBase + T);
-        }
+    for (let i = 0; i < out.length; i++) {
+        const clamped = out[i] < minVal ? minVal : out[i];
+        out[i] = (clamped + 4.0) / 4.0;
     }
 
-    return { data: out, nMels, T };
+    return { data: out, nMels, T, actualT: T };
 }
 
 // ─── Prompt Configuration & Language Prefix Mapping ────────────────────────────
@@ -453,8 +484,26 @@ class Qwen3AsrEngine {
 
     private isLoading = false;
     private isProcessing = false;
+    private currentIsFinal = false;
+    private currentAudioLength = 0;
     private abortCurrent = false;
-    private currentProcessingIsFinal = false;
+    private processingQueue: Array<{ audio: Float32Array; asrLanguage: string; promptLanguage: string; isFinal: boolean }> = [];
+
+    // Incremental segment streaming state (like Nemotron segment commit)
+    private committedSampleOffset = 0;
+    private committedText = '';
+    private lastTranscribedLength = 0;
+    private lastSegmentPartial = '';
+    private lastFullPartial = '';
+
+    private resetStreamState() {
+        this.committedSampleOffset = 0;
+        this.committedText = '';
+        this.lastTranscribedLength = 0;
+        this.lastSegmentPartial = '';
+        this.lastFullPartial = '';
+        this.currentAudioLength = 0;
+    }
 
     async checkShaderF16Support(): Promise<boolean> {
         try {
@@ -624,36 +673,28 @@ class Qwen3AsrEngine {
             this.embF16 = emb.dtype === 'float16' ? new Uint16Array(embBuf) : null;
             this.embF32 = emb.dtype === 'float32' ? new Float32Array(embBuf) : null;
 
-            // Setup ONNX Runtime Web (CRITICAL: set numThreads = 1 so polyfilled SharedArrayBuffer never deadlocks/throttles mobile WASM!)
+            // Setup ONNX Runtime Web
             ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/';
             ort.env.wasm.numThreads = 1;
             ort.env.webgpu.powerPreference = 'high-performance';
             ort.env.debug = false;
-            ort.env.logLevel = 'error';
+            ort.env.logLevel = 'fatal';
 
             post({ type: 'progress', payload: { status: 'progress', file: 'Creating WebGPU Inference Sessions...', progress: 95 } });
 
+            // Match Sokuji: pure ['webgpu'] execution provider so nodes are never split across WebGPU and WASM
             const gpuOpts = (extra: Record<string, unknown> = {}) => ({
-                executionProviders: ['webgpu','wasm'],
+                executionProviders: ['webgpu'],
                 graphOptimizationLevel: 'all' as const,
                 ...extra,
             });
-            const kvOnGpu = {
-                preferredOutputLocation: {
-                    present_keys: 'gpu-buffer',
-                    present_values: 'gpu-buffer'
-                }
-            };
 
-            // Step 2: Load Encoder & Decoder sessions sequentially, freeing raw ArrayBuffers immediately after each creation
-            // to cut peak mobile RAM by > 500 MB!
             try {
                 {
                     let encBuf: ArrayBuffer | null = await readCachedBuffer(encoderFileName);
                     this.encoderSession = await ort.InferenceSession.create(encBuf, gpuOpts());
                     encBuf = null;
                 }
-                // Yield briefly so mobile JS GC reclaims the 376MB encoder ArrayBuffer before reading 345MB decoder weights
                 await new Promise(r => setTimeout(r, 20));
 
                 {
@@ -661,35 +702,20 @@ class Qwen3AsrEngine {
                     const decStepBuf = await readCachedBuffer(decoderStepFileName);
                     let weightsBytes: Uint8Array | null = new Uint8Array(await readCachedBuffer(weightsFileName));
 
-                    try {
-                        this.decoderInitSession = await ort.InferenceSession.create(
-                            decInitBuf,
-                            gpuOpts({ externalData: [{ path: weightsFileName, data: weightsBytes }], ...kvOnGpu })
-                        );
-                        this.decoderStepSession = await ort.InferenceSession.create(
-                            decStepBuf,
-                            gpuOpts({ externalData: [{ path: weightsFileName, data: weightsBytes }], ...kvOnGpu })
-                        );
-                        this.usingGpuBufferKv = true;
-                    } catch (kvErr) {
-                        console.warn('[Qwen3 ASR] gpu-buffer KV location failed, retrying WebGPU with standard buffers:', kvErr);
-                        try { await (this.decoderInitSession as any)?.release?.(); } catch {}
-                        try { await (this.decoderStepSession as any)?.release?.(); } catch {}
-                        this.decoderInitSession = await ort.InferenceSession.create(
-                            decInitBuf,
-                            gpuOpts({ externalData: [{ path: weightsFileName, data: weightsBytes }] })
-                        );
-                        this.decoderStepSession = await ort.InferenceSession.create(
-                            decStepBuf,
-                            gpuOpts({ externalData: [{ path: weightsFileName, data: weightsBytes }] })
-                        );
-                        this.usingGpuBufferKv = false;
-                    }
+                    this.decoderInitSession = await ort.InferenceSession.create(
+                        decInitBuf,
+                        gpuOpts({ externalData: [{ path: weightsFileName, data: weightsBytes }] })
+                    );
+                    this.decoderStepSession = await ort.InferenceSession.create(
+                        decStepBuf,
+                        gpuOpts({ externalData: [{ path: weightsFileName, data: weightsBytes }] })
+                    );
+                    this.usingGpuBufferKv = false;
                     weightsBytes = null;
                 }
 
                 this.encoderMelType = (this.encoderSession as any).inputMetadata?.[0]?.type ?? 'float32';
-                post({ type: 'log', payload: `WebGPU sessions created successfully (KV on GPU: ${this.usingGpuBufferKv}).` });
+                post({ type: 'log', payload: 'WebGPU sessions created successfully.' });
             } catch (webgpuErr: any) {
                 console.warn('[Qwen3 ASR] WebGPU session creation failed, falling back to WASM:', webgpuErr);
                 await this.releaseSessions();
@@ -721,18 +747,18 @@ class Qwen3AsrEngine {
                 this.encoderMelType = (this.encoderSession as any).inputMetadata?.[0]?.type ?? 'float32';
             }
 
-            // Yield for GC before shader warmup
             await new Promise(r => setTimeout(r, 20));
 
-            // Step 3: Pre-compile WebGPU Shaders for the primary 4.0s bucket (T = 400, promptLen = 74) AND 2 steps of decoderStepSession!
-            // Passing 'zh' ensures the 3-token language_prefix_ids are included so promptLen during warmup (74)
-            // is 100% identical to real speech inference!
-            post({ type: 'progress', payload: { status: 'progress', file: 'Compiling WebGPU shaders...', progress: 98 } });
-            post({ type: 'log', payload: 'Warming up WebGPU shaders for static 4s bucket + decoder step...' });
-            try {
-                await this.transcribeAudioInternal(new Float32Array(1600), 'zh', 'zh-TW', true, true);
-            } catch (warmupErr) {
-                console.warn('[Qwen3 ASR] Warmup skipped:', warmupErr);
+            // Step 3: Fast WebGPU Shader Warmup (1 step: encoder + decoder_init + 1 decoder_step)
+            const isMobile = typeof navigator !== 'undefined' && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+            if (!isMobile) {
+                post({ type: 'progress', payload: { status: 'progress', file: 'Compiling WebGPU shaders...', progress: 98 } });
+                post({ type: 'log', payload: 'Warming up WebGPU shaders...' });
+                try {
+                    await this.runSingleSegmentInference(new Float32Array(1600), 'zh', 'zh-TW', true);
+                } catch (warmupErr) {
+                    console.warn('[Qwen3 ASR] Warmup skipped:', warmupErr);
+                }
             }
 
             post({ type: 'loaded', payload: true });
@@ -752,69 +778,156 @@ class Qwen3AsrEngine {
             return;
         }
 
-        // If audio is too short (< 0.5s at 16kHz) and not final, skip and release lock
-        if (!isFinal && audio.length < 8000) {
-            post({ type: 'transcription-partial', payload: '' });
-            return;
-        }
-
-        if (this.isProcessing) {
-            if (!isFinal) {
-                return;
-            }
-            if (!this.currentProcessingIsFinal) {
+        // If an interim pass is currently running and isFinal arrives:
+        // Check if the user actually spoke new words after this.currentAudioLength.
+        // - If YES (more speech was spoken after the in-flight interim chunk): abort the outdated interim chunk immediately!
+        // - If NO (the trailing audio since this.currentAudioLength is just VAD hangover silence): let the in-flight chunk finish
+        //   streaming its tokens, and then processQueue() will finalize it in 0ms without re-running the GPU!
+        if (this.isProcessing && !this.currentIsFinal && isFinal) {
+            const trailingSlice = audio.length > this.currentAudioLength
+                ? audio.subarray(this.currentAudioLength)
+                : new Float32Array(0);
+            if (trailingSlice.length >= 3200 && hasSpeechEnergy(trailingSlice)) {
                 this.abortCurrent = true;
             }
-            while (this.isProcessing) {
-                await new Promise((res) => setTimeout(res, 8));
-            }
+        }
+
+        // Keep only final requests in queue; latest interim audio supersedes older queued interim items
+        this.processingQueue = this.processingQueue.filter(req => req.isFinal);
+        this.processingQueue.push({ audio, asrLanguage, promptLanguage, isFinal });
+        this.processQueue();
+    }
+
+    private async processQueue() {
+        if (this.isProcessing || this.processingQueue.length === 0) {
+            return;
         }
 
         this.isProcessing = true;
         this.abortCurrent = false;
-        this.currentProcessingIsFinal = isFinal;
+        const { audio, asrLanguage, promptLanguage, isFinal } = this.processingQueue.shift()!;
+        this.currentIsFinal = isFinal;
+        this.currentAudioLength = audio.length;
+
         try {
-            // For interim streaming, cap audio window to latest 4.0 seconds (64,000 samples)
-            // so it always hits the pre-warmed T=400 static bucket with zero shader compilation!
-            const effectiveAudio = (!isFinal && audio.length > 64000)
-                ? audio.subarray(audio.length - 64000)
-                : audio;
-            await this.transcribeAudioInternal(effectiveAudio, asrLanguage, promptLanguage, false, isFinal);
+            // Detect if a brand-new recording session started
+            if (audio.length < this.lastTranscribedLength) {
+                this.resetStreamState();
+                this.currentAudioLength = audio.length;
+            }
+
+            const isMobile = typeof navigator !== 'undefined' && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+            const newAudioSlice = audio.subarray(this.lastTranscribedLength);
+            const hasNewSpeech = hasSpeechEnergy(newAudioSlice);
+            // Desktop: 0.4s (6400 samples) for ultra-responsive streaming; Mobile: 1.0s (16000 samples) to avoid saturating mobile GPU
+            const minNewInterimSamples = isMobile ? 16000 : 6400;
+
+            if (!isFinal) {
+                if (audio.length < 8000 || (this.lastFullPartial && (newAudioSlice.length < minNewInterimSamples || !hasNewSpeech))) {
+                    post({ type: 'transcription-partial', payload: this.lastFullPartial });
+                    return;
+                }
+            }
+
+            // If we are on isFinal and no new speech energy arrived since the last interim transcription
+            // (because the last 1.15s~1.35s before VAD speech-end is silence!), finalize in 0ms without re-running the LLM!
+            if (isFinal && this.lastFullPartial && (newAudioSlice.length < 3200 || !hasNewSpeech)) {
+                const finalOut = this.lastFullPartial;
+                this.resetStreamState();
+                post({ type: 'transcription', payload: { text: finalOut, isFinal: true } });
+                return;
+            }
+
+            // Commit completed 2.8-second segments (44,800 samples) so normal utterances run in a single pass
+            const SEGMENT_COMMIT_SAMPLES = 44800; // 2.8s
+            let activeSlice = audio.subarray(this.committedSampleOffset);
+
+            while (activeSlice.length > MAX_SEGMENT_SAMPLES && !this.abortCurrent) {
+                const chunk = activeSlice.subarray(0, SEGMENT_COMMIT_SAMPLES);
+                const chunkText = await this.runSingleSegmentInference(
+                    chunk,
+                    asrLanguage,
+                    promptLanguage,
+                    false,
+                    false,
+                    this.committedText
+                );
+                this.committedSampleOffset += SEGMENT_COMMIT_SAMPLES - 2400; // 0.15s overlap
+                if (chunkText.trim()) {
+                    this.committedText = (this.committedText + chunkText).trim();
+                    this.lastFullPartial = this.committedText;
+                    post({ type: 'transcription-partial', payload: { text: this.committedText, stillBusy: true } });
+                }
+                activeSlice = audio.subarray(this.committedSampleOffset);
+            }
+
+            const trimmedActiveSlice = trimTrailingSilence(activeSlice);
+            const segmentText = await this.runSingleSegmentInference(
+                trimmedActiveSlice,
+                asrLanguage,
+                promptLanguage,
+                false,
+                isFinal,
+                this.committedText
+            );
+
+            this.lastTranscribedLength = audio.length;
+            this.lastSegmentPartial = segmentText;
+            const combinedText = (this.committedText + segmentText).trim();
+            this.lastFullPartial = combinedText;
+
+            if (isFinal) {
+                this.resetStreamState();
+                post({ type: 'transcription', payload: { text: combinedText, isFinal: true } });
+            } else {
+                if (activeSlice.length >= SEGMENT_COMMIT_SAMPLES && segmentText.trim().length > 0) {
+                    this.committedSampleOffset = audio.length - 2400; // keep 0.15s overlap
+                    this.committedText = combinedText;
+                    this.lastSegmentPartial = '';
+                }
+                // Release isAsrBusy in App.tsx now that the interim chunk is completely done
+                post({ type: 'transcription-partial', payload: combinedText });
+            }
         } catch (err: any) {
-            if (err?.message !== 'ABORTED') {
+            if (err?.message === 'ABORTED') {
+                // Ensure App.tsx busy state is cleared if aborted
+                post({ type: 'transcription-partial', payload: this.lastFullPartial });
+            } else {
                 console.error('[Qwen3 ASR Transcribe Error]:', err);
                 post({ type: 'error', payload: `Transcription error: ${err?.message || err}` });
             }
         } finally {
             this.isProcessing = false;
             this.abortCurrent = false;
+            this.processQueue();
         }
     }
 
     cancel() {
+        this.processingQueue = [];
         if (this.isProcessing) {
             this.abortCurrent = true;
         }
+        this.resetStreamState();
         post({ type: 'transcription-partial', payload: '' });
     }
 
-    private async transcribeAudioInternal(
+    private async runSingleSegmentInference(
         audio: Float32Array,
         asrLanguage?: string,
         promptLanguage?: string,
         isWarmup: boolean = false,
-        isFinal: boolean = true
-    ) {
+        isFinal: boolean = true,
+        prefixText: string = ''
+    ): Promise<string> {
         if (audio.length < 320) {
-            if (!isWarmup) post({ type: 'transcription', payload: { text: '', isFinal } });
-            return;
+            return '';
         }
 
         const shouldConvertToTraditional = isTraditionalChinese(promptLanguage) || isTraditionalChinese(asrLanguage);
 
-        // 1. Extract Whisper-style log-mel spectrogram padded to a fixed bucket T (400 / 800 / 1600)
-        // so Mobile WebGPU never recompiles dynamic-shape encoder or decoder_init shaders!
-        const mel = logMel(audio, this.filters!, isWarmup ? 400 : undefined);
+        // 1. Extract Whisper-style log-mel spectrogram
+        const mel = logMel(audio, this.filters!);
         const melData = this.encoderMelType === 'float16' ? f32ToF16(mel.data) : mel.data;
 
         // 2. Run Encoder
@@ -822,13 +935,13 @@ class Qwen3AsrEngine {
         const encResults = await this.encoderSession!.run({ mel: melTensor });
         const af = encResults.audio_features as ort.Tensor;
         const nAudio = af.dims[1];
-        const afF32 = af.type === 'float16' ? f16ToF32(af.data as Uint16Array) : (af.data as Float32Array);
+        const afF32 = af.type === 'float16' ? f16ToF32(af.data as ArrayBufferView) : (af.data as Float32Array);
 
         if (this.abortCurrent && !isWarmup) {
             throw new Error('ABORTED');
         }
 
-        // 3. Construct prompt tokens sequence (always use a valid language prefix so promptLen is constant per bucket)
+        // 3. Construct prompt tokens sequence
         const targetLang = normalizeLangForPrefix(promptLanguage || asrLanguage, this.cfg!) || 'zh';
         const { ids, audioStart } = buildPromptIds(nAudio, this.cfg!, targetLang);
 
@@ -869,104 +982,101 @@ class Qwen3AsrEngine {
         let pastV = initOut.present_values as ort.Tensor;
 
         if (this.abortCurrent && !isWarmup) {
-            if (this.usingGpuBufferKv) {
-                try { pastK.dispose?.(); } catch {}
-                try { pastV.dispose?.(); } catch {}
-            }
             throw new Error('ABORTED');
         }
 
-        // out.logits in layout-v2 is already [1, 1, vocab_size] (last token)
         const initLogitsTensor = initOut.logits as ort.Tensor;
-        let nextToken = argmax(logitsAsF32(initLogitsTensor));
+        let nextToken = argmaxLogits(initLogitsTensor);
         const generatedIds = [nextToken];
 
         let pos = promptLen;
-        const maxTokens = isWarmup ? 3 : (isFinal ? Math.min(192, this.cfg!.prompt.max_new_tokens || 192) : 28);
-        let lastEmittedPartial = '';
+        const actualAudioTokens = audioTokenCount(mel.actualT, this.cfg!.audio_tokens);
+        const audioBoundedMax = Math.min(48, Math.max(8, Math.ceil(actualAudioTokens * 0.85) + 5));
+        const maxTokens = isWarmup ? 2 : (isFinal ? audioBoundedMax : Math.min(24, audioBoundedMax));
+        let lastEmittedCombined = this.lastFullPartial;
 
-        // Emit first token immediately if it is already a valid text token
         if (!isWarmup && !this.eos.has(nextToken)) {
             const { textIds } = splitGenerated(generatedIds, this.cfg!);
             if (textIds.length > 0) {
                 const firstPartial = this.decoder!.decode(textIds).trim();
                 if (firstPartial) {
-                    lastEmittedPartial = shouldConvertToTraditional ? toTraditionalChinese(firstPartial) : firstPartial;
-                    post({ type: 'transcription-partial', payload: lastEmittedPartial });
-                    await new Promise(r => setTimeout(r, 0));
+                    const formatted = shouldConvertToTraditional ? toTraditionalChinese(firstPartial) : firstPartial;
+                    const combined = prefixText + formatted;
+                    if (combined.length >= lastEmittedCombined.length && combined !== lastEmittedCombined) {
+                        lastEmittedCombined = combined;
+                        post({ type: 'transcription-partial', payload: { text: combined, stillBusy: true } });
+                    }
                 }
             }
         }
 
         // 7. Autoregressive Greedy Generation Loop
-        // Note: When isWarmup === true, we intentionally force 2 steps even if nextToken is EOS
-        // so decoderStepSession compiles all 28 layers of WebGPU shaders during load()!
-        try {
-            const stepRow = new Float32Array(this.hidden);
-            const posBigArray = new BigInt64Array(1);
+        const stepRow = new Float32Array(this.hidden);
+        const posBigArray = new BigInt64Array(1);
 
-            while ((isWarmup || !this.eos.has(nextToken)) && generatedIds.length < maxTokens) {
-                if (this.abortCurrent && !isWarmup) {
-                    throw new Error('ABORTED');
+        while ((isWarmup || !this.eos.has(nextToken)) && generatedIds.length < maxTokens) {
+            if (this.abortCurrent && !isWarmup) {
+                throw new Error('ABORTED');
+            }
+            const tokenToEmbed = isWarmup && this.eos.has(nextToken) ? 100 : nextToken;
+            this.embedRowInto(tokenToEmbed, stepRow, 0);
+            posBigArray[0] = BigInt(pos);
+
+            const stepEmbedsTensor = makeEmbTensor(stepRow, stepEmbType, [1, 1, this.hidden]);
+            const stepPosTensor = new ort.Tensor('int64', posBigArray, [1, 1]);
+
+            const stepOut = await this.decoderStepSession!.run({
+                input_embeds: stepEmbedsTensor,
+                position_ids: stepPosTensor,
+                past_keys: pastK,
+                past_values: pastV,
+            });
+
+            pastK = stepOut.present_keys as ort.Tensor;
+            pastV = stepOut.present_values as ort.Tensor;
+            const stepLogitsTensor = stepOut.logits as ort.Tensor;
+            nextToken = argmaxLogits(stepLogitsTensor);
+            generatedIds.push(nextToken);
+            pos++;
+
+            // Stop immediately if the model repeats the same token 3 times or 2-token pattern
+            const len = generatedIds.length;
+            if (!isWarmup && len >= 5) {
+                if (
+                    (generatedIds[len - 1] === generatedIds[len - 2] &&
+                     generatedIds[len - 2] === generatedIds[len - 3]) ||
+                    (len >= 6 &&
+                     generatedIds[len - 1] === generatedIds[len - 3] &&
+                     generatedIds[len - 2] === generatedIds[len - 4])
+                ) {
+                    break;
                 }
-                const tokenToEmbed = isWarmup && this.eos.has(nextToken) ? 100 : nextToken;
-                this.embedRowInto(tokenToEmbed, stepRow, 0);
-                posBigArray[0] = BigInt(pos);
+            }
 
-                const stepEmbedsTensor = makeEmbTensor(stepRow, stepEmbType, [1, 1, this.hidden]);
-                const stepPosTensor = new ort.Tensor('int64', posBigArray, [1, 1]);
-
-                const stepOut = await this.decoderStepSession!.run({
-                    input_embeds: stepEmbedsTensor,
-                    position_ids: stepPosTensor,
-                    past_keys: pastK,
-                    past_values: pastV,
-                });
-
-                // Only dispose GPU-resident KV cache tensors from the previous step
-                if (this.usingGpuBufferKv) {
-                    try { pastK.dispose?.(); } catch {}
-                    try { pastV.dispose?.(); } catch {}
-                }
-
-                pastK = stepOut.present_keys as ort.Tensor;
-                pastV = stepOut.present_values as ort.Tensor;
-                const stepLogitsTensor = stepOut.logits as ort.Tensor;
-                nextToken = argmax(logitsAsF32(stepLogitsTensor));
-                generatedIds.push(nextToken);
-                pos++;
-
-                // Stream every newly decoded token immediately and yield a macrotask so mobile UI repaints smoothly
-                if (!isWarmup && !this.eos.has(nextToken)) {
-                    const { textIds } = splitGenerated(generatedIds, this.cfg!);
-                    if (textIds.length > 0) {
-                        const partialText = this.decoder!.decode(textIds).trim();
-                        if (partialText) {
-                            const formattedPartial = shouldConvertToTraditional ? toTraditionalChinese(partialText) : partialText;
-                            if (formattedPartial !== lastEmittedPartial) {
-                                lastEmittedPartial = formattedPartial;
-                                post({ type: 'transcription-partial', payload: formattedPartial });
-                                await new Promise(r => setTimeout(r, 0));
-                            }
+            // Stream every generated token live to the UI while keeping stillBusy: true
+            // so App.tsx/vad.worker.ts won't send overlapping chunks until this pass finishes!
+            if (!isWarmup && !this.eos.has(nextToken)) {
+                const { textIds } = splitGenerated(generatedIds, this.cfg!);
+                if (textIds.length > 0) {
+                    const partialText = this.decoder!.decode(textIds).trim();
+                    if (partialText) {
+                        const formattedPartial = shouldConvertToTraditional ? toTraditionalChinese(partialText) : partialText;
+                        const combined = prefixText + formattedPartial;
+                        if (combined.length >= lastEmittedCombined.length && combined !== lastEmittedCombined) {
+                            lastEmittedCombined = combined;
+                            post({ type: 'transcription-partial', payload: { text: combined, stillBusy: true } });
                         }
                     }
                 }
             }
-        } finally {
-            if (this.usingGpuBufferKv) {
-                try { pastK.dispose?.(); } catch {}
-                try { pastV.dispose?.(); } catch {}
-            }
         }
 
-        if (isWarmup) return;
+        if (isWarmup) return '';
 
         // 8. Split generated tokens (cuts at <asr_text> and removes EOS)
         const { textIds } = splitGenerated(generatedIds, this.cfg!);
         const finalText = this.decoder!.decode(textIds).trim();
-        const formattedFinal = shouldConvertToTraditional ? toTraditionalChinese(finalText) : finalText;
-
-        post({ type: 'transcription', payload: { text: formattedFinal, isFinal } });
+        return shouldConvertToTraditional ? toTraditionalChinese(finalText) : finalText;
     }
 
     async unload() {

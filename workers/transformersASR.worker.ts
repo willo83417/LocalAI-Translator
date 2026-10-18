@@ -1,13 +1,12 @@
-import { pipeline, env, TextStreamer, StoppingCriteria, StoppingCriteriaList } from '@huggingface/transformers';
+import { pipeline, env } from '@huggingface/transformers';
 import { toTraditionalChinese, isTraditionalChinese } from '../utils/chineseConverter';
 
 // --- Environment Configuration ---
 env.backends.onnx.executionProviders = ['webgpu', 'wasm'];
 env.useBrowserCache = true;
-env.useWasmCache = true;    //new wasm cache setting
+env.useWasmCache = true;
 env.cacheDir = 'transformers-cache';
 
-// --- Worker State & Communication ---
 interface WorkerMessage {
     type: 'load' | 'transcribe' | 'unload' | 'cancel';
     payload?: any;
@@ -20,43 +19,14 @@ interface AppMessage {
 
 const post = (message: AppMessage) => self.postMessage(message);
 
-// Maps specific language codes to prompts that guide the Whisper model's output format.
-const PROMPT_MAP: Record<string, string> = {
-    'zh-TW': '請使用(zh-Hant)繁體中文輸出。',
-    'zh-HK': '請使用(zh-Hant-HK)香港繁體中文輸出。',
-    'zh-Hans': '请使用(zh-Hans)简体中文输出。'
-};
-
-class InterruptableStoppingCriteria extends StoppingCriteria {
-    interrupted: boolean = false;
-    
-    interrupt() {
-        this.interrupted = true;
-    }
-    
-    reset() {
-        this.interrupted = false;
-    }
-    
-    _call(input_ids: any, scores: any) {
-        const batchSize = input_ids.dims ? input_ids.dims[0] : (input_ids.length || 1);
-        return new Array(batchSize).fill(this.interrupted);
-    }
-}
-
 class Transcriber {
     private transcriber: any = null;
     private loading: boolean = false;
     private currentModelId: string | null = null;
-    private processingQueue: Array<{ audioData: Float32Array, asrLanguage: string, promptLanguage: string, isFinal: boolean }> = [];
+    private currentQuantization: any = null;
     private isProcessing: boolean = false;
-    private abortCurrent: boolean = false;
-    private currentProcessingIsFinal: boolean = false;
-    private stoppingCriteria: InterruptableStoppingCriteria;
-
-    constructor() {
-        this.stoppingCriteria = new InterruptableStoppingCriteria();
-    }
+    private nextRequest: { audioData: Float32Array, asrLanguage: string, promptLanguage: string, isFinal: boolean } | null = null;
+    private ignoreCurrentResult: boolean = false;
 
     async load(payload: { modelId: string, quantization: any }) {
         const { modelId, quantization } = payload;
@@ -74,10 +44,10 @@ class Transcriber {
 
         this.loading = true;
         this.currentModelId = modelId;
+        this.currentQuantization = quantization;
         post({ type: 'log', payload: `Initializing pipeline for model: ${modelId} with quantization: ${JSON.stringify(quantization)}` });
 
         try {
-            // Dispose previous transcriber if it exists to free memory
             if (this.transcriber) {
                 post({ type: 'log', payload: `Disposing previous model: ${this.currentModelId}`});
                 await this.transcriber.dispose();
@@ -118,122 +88,64 @@ class Transcriber {
             return;
         }
 
-        if (isFinal) {
-            // If we are currently processing a non-final request, abort it so we can process the final request immediately
-            if (this.isProcessing && !this.currentProcessingIsFinal) {
-                this.abortCurrent = true;
-                this.stoppingCriteria.interrupt();
+        // Whisper is an utterance-level model; ignore empty or near-silent tiny buffers (< 0.25s)
+        if (!audioData || audioData.length < 4000) {
+            if (isFinal) {
+                post({ type: 'transcription', payload: { text: '', isFinal: true } });
             }
-            // Clear any pending non-final requests from the queue to process final audio right away
-            this.processingQueue = this.processingQueue.filter(item => item.isFinal);
-        } else {
-            // For realtime preview, discard older pending interim requests to prevent queue lag
-            this.processingQueue = this.processingQueue.filter(item => item.isFinal);
+            return;
         }
 
-        this.processingQueue.push({ audioData, asrLanguage, promptLanguage, isFinal });
-        this.processQueue();
-    }
-
-    private async processQueue() {
-        if (this.isProcessing || this.processingQueue.length === 0) {
+        // If another transcription is currently running on WebGPU, store as next pending request
+        if (this.isProcessing) {
+            if (isFinal) {
+                this.nextRequest = { audioData, asrLanguage, promptLanguage, isFinal };
+            }
             return;
         }
 
         this.isProcessing = true;
-        this.abortCurrent = false;
-        this.stoppingCriteria.reset();
-        const { audioData, asrLanguage, promptLanguage, isFinal } = this.processingQueue.shift()!;
-        this.currentProcessingIsFinal = isFinal;
-
-        // Skip realtime processing if audio is too short (< 0.5s at 16kHz = 8000 samples)
-        // Whisper with less than 0.5s audio cannot reliably infer tokens and produces hallucinations.
-        if (!isFinal && audioData.length < 8000) {
-            this.isProcessing = false;
-            post({ type: 'transcription-partial', payload: '' });
-            this.processQueue();
-            return;
-        }
-
-        post({ type: 'log', payload: `Starting transcription (ASR Lang: ${asrLanguage}, Prompt Lang: ${promptLanguage}, isFinal: ${isFinal})...` });
+        this.ignoreCurrentResult = false;
 
         try {
-            const tokenizer = this.transcriber.tokenizer;
+            post({ type: 'log', payload: `Starting Whisper transcription (ASR Lang: ${asrLanguage}, Prompt Lang: ${promptLanguage})...` });
+
             const shouldConvertToTraditional = isTraditionalChinese(promptLanguage) || isTraditionalChinese(asrLanguage);
-            let fullTranscription = "";
-
-            // For non-final realtime preview on mobile, bound audio to latest 8s (128,000 samples)
-            // and avoid expensive 30s chunk overlap slicing when audio is under 30s
-            const effectiveAudio = (!isFinal && audioData.length > 128000)
-                ? audioData.subarray(audioData.length - 128000)
-                : audioData;
-
-            const streamer = new TextStreamer(tokenizer, {
-                skip_prompt: true,
-                skip_special_tokens: true,
-                callback_function: (text: string) => {
-                    if (this.abortCurrent || this.stoppingCriteria.interrupted) {
-                        throw new Error('ABORTED');
-                    }
-                    fullTranscription += text;
-                    const trimmed = fullTranscription.trim();
-                    if (trimmed) {
-                        const outputPartial = shouldConvertToTraditional ? toTraditionalChinese(trimmed) : trimmed;
-                        post({ type: 'transcription-partial', payload: outputPartial });
-                    }
-                }
-            });
 
             const generationOptions: any = {
                 language: asrLanguage?.startsWith('zh') ? 'chinese' : (asrLanguage === 'auto' ? undefined : asrLanguage),
                 task: 'transcribe',
-                temperature: 0.0, // Greedy decoding produces deterministic results and drastically suppresses hallucinations
-                repetition_penalty: 1.2, // Penalize repeating loops on incomplete audio
-                condition_on_previous_text: false, // Prevents partial hallucinations from conditioning subsequent output
-                stopping_criteria: new StoppingCriteriaList([this.stoppingCriteria]),
-                streamer,
-                max_new_tokens: isFinal ? 128 : 48,
             };
 
-            if (effectiveAudio.length > 16000 * 28) {
+            // Enable chunking for long audio (> 28 seconds) to prevent Whisper's 30s limit
+            if (audioData.length > 16000 * 28) {
                 generationOptions.chunk_length_s = 30;
                 generationOptions.stride_length_s = 5;
             }
 
-            if (isFinal) {
-                // Use the specific promptLanguage code to look up the correct prompt for final transcription
-                const promptText = PROMPT_MAP[promptLanguage];
-                if (promptText) {
-                    post({ type: 'log', payload: `Applying prompt for ${promptLanguage}: "${promptText}"` });
-                    const { input_ids } = await this.transcriber.tokenizer(promptText);
-                    generationOptions.prompt_ids = input_ids.data.slice(0, -1);
-                }
+            const output = await this.transcriber(audioData, generationOptions);
+
+            if (this.ignoreCurrentResult) {
+                post({ type: 'log', payload: 'Whisper result ignored due to cancellation.' });
+                return;
             }
 
-            const output = await this.transcriber(effectiveAudio, generationOptions);
-            
-            if (this.abortCurrent || this.stoppingCriteria.interrupted) {
-                 throw new Error('ABORTED');
-            }
-
-            // Ensure we send the final authoritative result from the pipeline output
             const rawFinalText = (Array.isArray(output) ? output[0].text : output.text) || '';
-            const finalText = shouldConvertToTraditional ? toTraditionalChinese(rawFinalText) : rawFinalText;
-            post({ type: 'transcription', payload: { text: finalText.trim(), isFinal } });
-            post({ type: 'log', payload: 'Transcription completed successfully.' });
+            const finalText = (shouldConvertToTraditional ? toTraditionalChinese(rawFinalText) : rawFinalText).trim();
+
+            post({ type: 'transcription', payload: { text: finalText, isFinal: true } });
+            post({ type: 'log', payload: 'Whisper transcription completed successfully.' });
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
-            if (errorMessage === 'ABORTED') {
-                post({ type: 'log', payload: 'Transcription aborted for newer request.' });
-                // We don't send an error message to the UI for aborted requests
-            } else {
-                console.error('ASR Transcription Error:', error);
-                post({ type: 'error', payload: `Transcription error: ${errorMessage}` });
-            }
+            console.error('Whisper Transcription Error:', error);
+            post({ type: 'error', payload: `Transcription error: ${errorMessage}` });
         } finally {
             this.isProcessing = false;
-            this.abortCurrent = false;
-            this.processQueue();
+            if (this.nextRequest) {
+                const req = this.nextRequest;
+                this.nextRequest = null;
+                this.transcribe(req.audioData, req.asrLanguage, req.promptLanguage, req.isFinal);
+            }
         }
     }
 
@@ -245,13 +157,13 @@ class Transcriber {
 
         post({ type: 'log', payload: `Unloading model: ${this.currentModelId}` });
         try {
-            // Explicitly call dispose() to free up memory (including WebGPU/WebGL resources).
             await this.transcriber.dispose();
             this.transcriber = null;
             this.currentModelId = null;
+            this.nextRequest = null;
+            this.isProcessing = false;
             post({ type: 'unloaded', payload: true });
             post({ type: 'log', payload: 'ASR pipeline instance disposed and released.' });
-
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
             console.error('ASR Unload Error:', error);
@@ -260,10 +172,9 @@ class Transcriber {
     }
 
     cancel() {
-        this.processingQueue = [];
+        this.nextRequest = null;
         if (this.isProcessing) {
-            this.abortCurrent = true;
-            this.stoppingCriteria.interrupt();
+            this.ignoreCurrentResult = true;
         }
         post({ type: 'log', payload: 'ASR transcription cancelled.' });
     }

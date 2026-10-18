@@ -34,8 +34,7 @@ class NemotronTranscriber {
         if (this.loading) return;
 
         const validProfiles = ['TURBO', 'FAST', 'BALANCED', 'NORMAL', 'HIGH'] as const;
-        const rawProfile = payload.asrProfile === 'BEST' ? 'HIGH' : (payload.asrProfile || 'NORMAL');
-        const profile = (validProfiles.includes(rawProfile as any) ? rawProfile : 'NORMAL') as any;
+        const profile = (validProfiles.includes(payload.asrProfile as any) ? payload.asrProfile : 'NORMAL') as any;
         const beamWidth = payload.asrBeamWidth || 1;
 
         if (this.engine && this.currentProfile === profile && this.currentBeamWidth === beamWidth) {

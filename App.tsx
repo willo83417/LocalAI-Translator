@@ -21,9 +21,6 @@ import { translateOfflineLensBlocks } from './services/offlineLensService';
 import type { Language, TranslationHistoryItem, CustomOfflineModel, EsearchOCROutput, EsearchOCRItem, AsrEngineType, NemotronProfile, NemotronBeamWidth, ImageLensResult } from './types';
 import { LANGUAGES, OFFLINE_MODELS, OFFLINE_MODELS_TS, ASR_MODELS, OCR_MODELS } from './constants';
 import { GeminiLiveService } from './services/geminiLiveService';
-import { createVad } from '@fluidinference/fluidvad';
-// @ts-ignore
-import fluidvadWasmUrl from '@fluidinference/fluidvad/dist/fluidvad_bg.wasm?url';
 
 interface SpeechRecognition {
     continuous: boolean;
@@ -316,7 +313,6 @@ const App: React.FC = () => {
     });
     const [asrProfile, setAsrProfile] = useState<NemotronProfile>(() => {
         const saved = localStorage.getItem('asr-profile');
-        if (saved === 'BEST') return 'HIGH';
         if (saved === 'TURBO' || saved === 'FAST' || saved === 'BALANCED' || saved === 'NORMAL' || saved === 'HIGH') {
             return saved as NemotronProfile;
         }
@@ -407,6 +403,25 @@ const App: React.FC = () => {
     // Flag to handle reverse translation logic after ASR
     const isReverseTranslateRef = useRef(false);
     const isAsrProcessingRef = useRef(false);
+    const vadWorkerRef = useRef<Worker | null>(null);
+
+    const setAsrBusy = useCallback((busy: boolean) => {
+        isAsrProcessingRef.current = busy;
+        vadWorkerRef.current?.postMessage({ type: 'set-busy', payload: busy });
+    }, []);
+
+    useEffect(() => {
+        const isMobileDevice = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+        const worker = new Worker(new URL('./workers/vad.worker.ts', import.meta.url), {
+            type: 'module',
+        });
+        vadWorkerRef.current = worker;
+        worker.postMessage({ type: 'warmup', payload: { isMobileDevice } });
+        return () => {
+            worker.terminate();
+            vadWorkerRef.current = null;
+        };
+    }, []);
 
     // Gemini 3.5 Live Service State & Ref
     const liveServiceRef = useRef<GeminiLiveService | null>(null);
@@ -826,11 +841,13 @@ const App: React.FC = () => {
                     }
                     setIsLoading(false);
                     break;
-                case 'extract_text_error':
-                    showNotification(t('notifications.imageProcessingFailed', { errorMessage }), 'error');
+                case 'extract_text_error': {
+                    const err = payload?.error || 'Image processing error';
+                    showNotification(t('notifications.imageProcessingFailed', { errorMessage: err }), 'error');
 					setInputText(''); 
 					setIsLoading(false);
                     break;
+                }
                 case 'extract_text_cancelled':
                     setInputText('');
                     showNotification(t('notifications.imageProcessingCancelled') || 'Image processing cancelled', 'info');
@@ -848,7 +865,7 @@ const App: React.FC = () => {
                     });
                     break;
                 case 'transcribe_done':
-                    isAsrProcessingRef.current = false;
+                    setAsrBusy(false);
                     const transcribedText = payload.text?.trim() || '';
                     setIsLoading(false);
                     
@@ -869,7 +886,7 @@ const App: React.FC = () => {
                     }
                     break;
                 case 'transcribe_error':
-                    isAsrProcessingRef.current = false;
+                    setAsrBusy(false);
                     setIsTranscribing(false);
                     const errorMessage = payload.error || 'Unknown transcription error.';
                     showNotification(t('notifications.transcriptionFailed', { errorMessage }), 'error');
@@ -878,7 +895,7 @@ const App: React.FC = () => {
                     setIsAwaitingAstTranslation(false);
                     break;
                 case 'transcribe_cancelled':
-                    isAsrProcessingRef.current = false;
+                    setAsrBusy(false);
                     setIsTranscribing(false);
                     setIsLoading(false);
                     setIsAwaitingAstTranslation(false);
@@ -926,7 +943,7 @@ const App: React.FC = () => {
                 }
                 break;
             case 'error':
-                isAsrProcessingRef.current = false;
+                setAsrBusy(false);
                 showNotification(payload, 'error');
                 setInputText(t('notifications.transcriptionFailed', { errorMessage: payload }));
                 setIsAsrInitializing(false);
@@ -942,13 +959,23 @@ const App: React.FC = () => {
                 showNotification(t('notifications.asrModelUnloaded'), 'info');
                 break;
             case 'transcription-partial':
-                isAsrProcessingRef.current = false;
-                if (typeof payload === 'string' && payload.trim()) {
-                    setInputText(payload);
+                if (payload && typeof payload === 'object' && 'text' in payload) {
+                    if (!(payload as any).stillBusy) {
+                        setAsrBusy(false);
+                    }
+                    const partialStr = (payload as any).text;
+                    if (typeof partialStr === 'string' && partialStr.trim()) {
+                        setInputText(partialStr);
+                    }
+                } else {
+                    setAsrBusy(false);
+                    if (typeof payload === 'string' && payload.trim()) {
+                        setInputText(payload);
+                    }
                 }
                 break;
             case 'transcription':
-                isAsrProcessingRef.current = false;
+                setAsrBusy(false);
                 const { text, isFinal } = payload;
                 const transcribedText = (text || '').trim();
                 
@@ -1464,7 +1491,7 @@ const App: React.FC = () => {
             setIsLoading(false);
         }
 
-        isAsrProcessingRef.current = false;
+        setAsrBusy(false);
 
         navigator.mediaDevices.getUserMedia({
             audio: {
@@ -1502,10 +1529,9 @@ const App: React.FC = () => {
                     lastNode = gainNode;
                 }
 
-                // Upgraded Worklet v2: built-in anti-aliased downsampler to 16000Hz!
-                // Mobile browsers often ignore { sampleRate: 16000 } and run AudioContext at 48000Hz or 44100Hz.
-                // Downsampling inside the AudioWorklet guarantees every 512-sample frame is strictly 16kHz (32ms).
-                if (!(globalThis as any).fluidVadWorkletV2Url) {
+                // Upgraded Worklet v3: built-in anti-aliased downsampler to 16000Hz + direct MessagePort transfer to vad.worker.ts!
+                // Audio frames bypass the Main Thread completely (AudioWorklet -> MessageChannel -> VAD Web Worker).
+                if (!(globalThis as any).fluidVadWorkletV3Url) {
                     const workletCode = `
                     class FluidVadProcessor extends AudioWorkletProcessor {
                       constructor() {
@@ -1513,6 +1539,18 @@ const App: React.FC = () => {
                         this._buffer = new Float32Array(512);
                         this._fill = 0;
                         this._resamplePos = 0;
+                        this._outPort = null;
+                        this.port.onmessage = (e) => {
+                          if (e.data && e.data.type === 'set-port' && e.ports && e.ports[0]) {
+                            this._outPort = e.ports[0];
+                          }
+                        };
+                      }
+                      _emitFrame() {
+                        const frame = this._buffer.slice();
+                        const targetPort = this._outPort || this.port;
+                        targetPort.postMessage(frame.buffer, [frame.buffer]);
+                        this._fill = 0;
                       }
                       process(inputs) {
                         const channel = inputs[0] && inputs[0][0];
@@ -1526,9 +1564,7 @@ const App: React.FC = () => {
                             this._fill += take;
                             offset += take;
                             if (this._fill === this._buffer.length) {
-                              const frame = this._buffer.slice();
-                              this.port.postMessage(frame.buffer, [frame.buffer]);
-                              this._fill = 0;
+                              this._emitFrame();
                             }
                           }
                         } else {
@@ -1545,9 +1581,7 @@ const App: React.FC = () => {
                             }
                             this._buffer[this._fill++] = count > 0 ? (sum / count) : channel[idx];
                             if (this._fill === this._buffer.length) {
-                              const frame = this._buffer.slice();
-                              this.port.postMessage(frame.buffer, [frame.buffer]);
-                              this._fill = 0;
+                              this._emitFrame();
                             }
                             pos += ratio;
                           }
@@ -1559,84 +1593,79 @@ const App: React.FC = () => {
                     registerProcessor("fluidvad-processor", FluidVadProcessor);
                     `;
                     const blob = new Blob([workletCode], { type: 'application/javascript' });
-                    (globalThis as any).fluidVadWorkletV2Url = URL.createObjectURL(blob);
+                    (globalThis as any).fluidVadWorkletV3Url = URL.createObjectURL(blob);
                 }
 
-                await audioContext.audioWorklet.addModule((globalThis as any).fluidVadWorkletV2Url);
-                
-                // Cache FluidVAD WASM binary in global memory so mobile doesn't re-fetch on every recording
-                if (!(globalThis as any).cachedFluidVadWasmBuffer) {
-                    const wasmResponse = await fetch(fluidvadWasmUrl);
-                    (globalThis as any).cachedFluidVadWasmBuffer = await wasmResponse.arrayBuffer();
-                }
-                const vad = await createVad(
-                    {
-                        threshold: 0.5,
-                        minSilenceDuration: isMobileDevice ? 1.15 : 1.35,
-                        maxSpeechDuration: 30,
-                        speechPadding: 0.35
-                    },
-                    { wasm: (globalThis as any).cachedFluidVadWasmBuffer.slice(0) }
-                );
-                
+                await audioContext.audioWorklet.addModule((globalThis as any).fluidVadWorkletV3Url);
                 const processor = new AudioWorkletNode(audioContext, "fluidvad-processor");
 
-                let accumulatedTotal: Float32Array[] = [];
-                let totalSampleLength = 0;
-                let lastStreamedSampleLength = 0;
-                let hasDetectedSpeech = false;
-                let framesSinceLastStream = 0;
                 // Trigger interval: ~9 frames (288ms) for Nemotron, ~16 frames (512ms) on mobile / 12 frames (384ms) on desktop for Qwen3/Whisper
                 const streamIntervalFrames = asrEngine === 'nemotron' ? 9 : (isMobileDevice ? 16 : 12);
+                const activeCallback = onDataAvailable || onChunkAvailable;
 
-                const mergeFloat32Arrays = (arrays: Float32Array[]): Float32Array => {
-                    const merged = new Float32Array(totalSampleLength);
-                    let offset = 0;
-                    for (const arr of arrays) {
-                        merged.set(arr, offset);
-                        offset += arr.length;
-                    }
-                    return merged;
+                // Direct zero-main-thread pipe: AudioWorkletNode.port <-> MessageChannel <-> vadWorkerRef
+                const channel = new MessageChannel();
+                processor.port.postMessage({ type: 'set-port' }, [channel.port1]);
+
+                let isStopped = false;
+                const cleanupAudioResources = () => {
+                    try { channel.port1.close(); } catch {}
+                    try { channel.port2.close(); } catch {}
+                    stream.getTracks().forEach(track => track.stop());
+                    processor.disconnect();
+                    silentGain.disconnect();
+                    audioContext.close().catch(() => {});
+                    mediaRecorderRef.current = null;
+                    onStopRecordingCallbackRef.current = null;
+                    setIsRecording(false);
+                    setIsAstRecording(false);
                 };
 
-                processor.port.onmessage = (e) => {
-                    const samples = new Float32Array(e.data);
-                    accumulatedTotal.push(samples);
-                    totalSampleLength += samples.length;
-
-                    const events = vad.push(samples);
-                    for (const event of events) {
-                        if (event.isStart) {
-                            hasDetectedSpeech = true;
-                        }
-                        if (!event.isStart && mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-                            mediaRecorderRef.current.stop();
-                            return;
-                        }
+                const finishWithSamples = (finalSamples: Float32Array) => {
+                    if (isStopped) return;
+                    isStopped = true;
+                    if (mediaRecorderRef.current) {
+                        (mediaRecorderRef.current as any).state = 'inactive';
                     }
-
-                    if (vad.isSpeaking) {
-                        hasDetectedSpeech = true;
+                    const finalBlob = finalSamples.length > 0
+                        ? float32SamplesToWavBlob(finalSamples, 16000)
+                        : new Blob([], { type: 'audio/wav' });
+                    const stopCb = onStopRecordingCallbackRef.current as any;
+                    cleanupAudioResources();
+                    if (stopCb) {
+                        stopCb(finalBlob, finalSamples);
                     }
+                };
 
-                    // Stream interim chunks while speaking OR when flushing trailing speech right after speaking
-                    const hasUnstreamedSpeech = hasDetectedSpeech && (totalSampleLength - lastStreamedSampleLength >= 4096);
-                    if (vad.isSpeaking || hasUnstreamedSpeech) {
-                        framesSinceLastStream++;
-                        const activeCallback = onDataAvailable || onChunkAvailable;
-                        if (activeCallback && framesSinceLastStream >= streamIntervalFrames && !isAsrProcessingRef.current) {
-                            framesSinceLastStream = 0;
-                            lastStreamedSampleLength = totalSampleLength;
-                            const merged = mergeFloat32Arrays(accumulatedTotal);
+                if (vadWorkerRef.current) {
+                    vadWorkerRef.current.onmessage = (e: MessageEvent) => {
+                        const { type, samples } = e.data || {};
+                        if (type === 'stream-chunk' && activeCallback && !isStopped) {
+                            const chunk = samples instanceof Float32Array ? samples : new Float32Array(samples);
                             if (preferRawFloat32) {
-                                activeCallback(new Blob([], { type: 'audio/wav' }), merged);
+                                activeCallback(new Blob([], { type: 'audio/wav' }), chunk);
                             } else {
-                                const blob = float32SamplesToWavBlob(merged, 16000);
-                                activeCallback(blob, merged);
+                                const blob = float32SamplesToWavBlob(chunk, 16000);
+                                activeCallback(blob, chunk);
                             }
+                        } else if ((type === 'speech-end' || type === 'stopped') && !isStopped) {
+                            const finalSamples = samples instanceof Float32Array ? samples : new Float32Array(samples || 0);
+                            finishWithSamples(finalSamples);
                         }
-                    }
-                };
+                    };
+
+                    vadWorkerRef.current.postMessage(
+                        {
+                            type: 'start',
+                            payload: {
+                                isMobileDevice,
+                                intervalFrames: streamIntervalFrames,
+                                enableStreaming: Boolean(activeCallback)
+                            }
+                        },
+                        [channel.port2]
+                    );
+                }
 
                 // Connect processor to a silent GainNode (gain = 0) before destination to prevent mic feedback on mobile speakers
                 const silentGain = audioContext.createGain();
@@ -1648,30 +1677,13 @@ const App: React.FC = () => {
                 mediaRecorderRef.current = {
                     state: 'recording',
                     stop: () => {
-                        if (!mediaRecorderRef.current || mediaRecorderRef.current.state === 'inactive') return;
+                        if (isStopped || !mediaRecorderRef.current || mediaRecorderRef.current.state === 'inactive') return;
                         mediaRecorderRef.current.state = 'inactive';
-                        let finalBlob = new Blob([], { type: 'audio/wav' });
-                        let finalSamples = new Float32Array(0);
-                        if (accumulatedTotal.length > 0) {
-                            finalSamples = mergeFloat32Arrays(accumulatedTotal);
-                            if (!preferRawFloat32) {
-                                finalBlob = float32SamplesToWavBlob(finalSamples, 16000);
-                            }
+                        if (vadWorkerRef.current) {
+                            vadWorkerRef.current.postMessage({ type: 'stop' });
+                        } else {
+                            finishWithSamples(new Float32Array(0));
                         }
-                        
-                        const stopCb = onStopRecordingCallbackRef.current as any;
-                        if (stopCb) {
-                            stopCb(finalBlob, finalSamples);
-                        }
-                        
-                        stream.getTracks().forEach(track => track.stop());
-                        processor.disconnect();
-                        silentGain.disconnect();
-                        audioContext.close().catch(() => {});
-                        mediaRecorderRef.current = null;
-                        onStopRecordingCallbackRef.current = null;
-                        setIsRecording(false);
-                        setIsAstRecording(false);
                     },
                     mimeType: 'audio/wav'
                 } as any;
@@ -1818,8 +1830,9 @@ const App: React.FC = () => {
 
             if (isOfflineAsrEnabled) {
                 // Offline ASR Path (Nemotron / Qwen3 / Whisper) - Direct zero-copy 16kHz Float32Array!
+                const isStreamingEngine = isRealtimeAsrEnabled && asrEngine !== 'whisper';
                 handleStartRecording(async (_audioBlob, rawSamples) => {
-                    if (!isRealtimeAsrEnabled) {
+                    if (!isStreamingEngine) {
                         setInputText(t('notifications.transcribing'));
                     }
                     setIsTranscribing(true);
@@ -1847,35 +1860,38 @@ const App: React.FC = () => {
                         const message = err instanceof Error ? err.message : 'Transcription failed.';
                         showNotification(message, 'error');
                     }
-                }, isRealtimeAsrEnabled ? async (_audioBlob, rawSamples) => {
+                }, isStreamingEngine ? async (_audioBlob, rawSamples) => {
                     if (isAsrProcessingRef.current) return;
                     try {
-                        isAsrProcessingRef.current = true;
+                        setAsrBusy(true);
                         const audioData = (rawSamples && rawSamples.length > 0)
                             ? rawSamples
                             : await processAudioForTranscription(_audioBlob, { noiseSuppression: false, gain: 1.0 });
-                        // Minimum samples check: 4800 samples (0.3s) for Nemotron, 8000 samples (0.5s) for Qwen3/Whisper
+                        // Minimum samples check: 4800 samples (0.3s) for Nemotron, 8000 samples (0.5s) for Qwen3
                         const minSamples = asrEngine === 'nemotron' ? 4800 : 8000;
                         if (audioData.length < minSamples) {
-                            isAsrProcessingRef.current = false;
+                            setAsrBusy(false);
                             return;
                         }
                         if (asrWorkerRef.current) {
-                            asrWorkerRef.current.postMessage({ 
-                                type: 'transcribe', 
-                                payload: { 
-                                    audio: audioData, 
-                                    asrLanguage: sourceLang.asrCode,
-                                    promptLanguage: sourceLang.code,
-                                    isFinal: false
-                                } 
-                            });
+                            asrWorkerRef.current.postMessage(
+                                { 
+                                    type: 'transcribe', 
+                                    payload: { 
+                                        audio: audioData, 
+                                        asrLanguage: sourceLang.asrCode,
+                                        promptLanguage: sourceLang.code,
+                                        isFinal: false
+                                    } 
+                                },
+                                [audioData.buffer]
+                            );
                         } else {
-                            isAsrProcessingRef.current = false;
+                            setAsrBusy(false);
                         }
                     } catch (err) {
                         console.error(err);
-                        isAsrProcessingRef.current = false;
+                        setAsrBusy(false);
                     }
                 } : undefined, undefined, true);
             } else if (isWebSpeechApiEnabled) { 
@@ -1902,12 +1918,12 @@ const App: React.FC = () => {
                      }, undefined, offlineAudioRealtime ? async (_audioBlob, rawSamples) => {
                         if (isAsrProcessingRef.current || !rawSamples) return;
                         try {
-                            isAsrProcessingRef.current = true;
+                            setAsrBusy(true);
                             const newAudioData = rawSamples.subarray(lastProcessedSampleIndexRef.current);
                             lastProcessedSampleIndexRef.current = rawSamples.length;
 
                             if (newAudioData.length === 0) {
-                                isAsrProcessingRef.current = false;
+                                setAsrBusy(false);
                                 return;
                             }
 
@@ -1923,7 +1939,7 @@ const App: React.FC = () => {
                             });
                         } catch (err) {
                             console.error(err);
-                            isAsrProcessingRef.current = false;
+                            setAsrBusy(false);
                         }
                      } : undefined, true);
                 } else {
@@ -2005,8 +2021,9 @@ const App: React.FC = () => {
             isReverseTranslateRef.current = true;
             
             if (isOfflineAsrEnabled) {
+                const isStreamingEngine = isRealtimeAsrEnabled && asrEngine !== 'whisper';
                  handleStartRecording(async (_audioBlob, rawSamples) => {
-                    if (!isRealtimeAsrEnabled) {
+                    if (!isStreamingEngine) {
                         setInputText(t('notifications.transcribing'));
                     }
                     setIsTranscribing(true);
@@ -2035,34 +2052,37 @@ const App: React.FC = () => {
                         const message = err instanceof Error ? err.message : 'Transcription failed.';
                         showNotification(message, 'error');
                     }
-                }, isRealtimeAsrEnabled ? async (_audioBlob, rawSamples) => {
+                }, isStreamingEngine ? async (_audioBlob, rawSamples) => {
                     if (isAsrProcessingRef.current) return;
                     try {
-                        isAsrProcessingRef.current = true;
+                        setAsrBusy(true);
                         const audioData = (rawSamples && rawSamples.length > 0)
                             ? rawSamples
                             : await processAudioForTranscription(_audioBlob, { noiseSuppression: false, gain: 1.0 });
                         const minSamples = asrEngine === 'nemotron' ? 4800 : 8000;
                         if (audioData.length < minSamples) {
-                            isAsrProcessingRef.current = false;
+                            setAsrBusy(false);
                             return;
                         }
                         if (asrWorkerRef.current) {
-                            asrWorkerRef.current.postMessage({ 
-                                type: 'transcribe', 
-                                payload: { 
-                                    audio: audioData, 
-                                    asrLanguage: targetLang.asrCode,
-                                    promptLanguage: targetLang.code,
-                                    isFinal: false
-                                } 
-                            });
+                            asrWorkerRef.current.postMessage(
+                                { 
+                                    type: 'transcribe', 
+                                    payload: { 
+                                        audio: audioData, 
+                                        asrLanguage: targetLang.asrCode,
+                                        promptLanguage: targetLang.code,
+                                        isFinal: false
+                                    } 
+                                },
+                                [audioData.buffer]
+                            );
                         } else {
-                            isAsrProcessingRef.current = false;
+                            setAsrBusy(false);
                         }
                     } catch (err) {
                         console.error(err);
-                        isAsrProcessingRef.current = false;
+                        setAsrBusy(false);
                     }
                 } : undefined, undefined, true);
             } else if (isWebSpeechApiEnabled) {
@@ -2089,12 +2109,12 @@ const App: React.FC = () => {
                     }, undefined, offlineAudioRealtime ? async (_audioBlob, rawSamples) => {
                        if (isAsrProcessingRef.current || !rawSamples) return;
                        try {
-                           isAsrProcessingRef.current = true;
+                           setAsrBusy(true);
                            const newAudioData = rawSamples.subarray(lastProcessedSampleIndexRef.current);
                            lastProcessedSampleIndexRef.current = rawSamples.length;
 
                            if (newAudioData.length === 0) {
-                               isAsrProcessingRef.current = false;
+                               setAsrBusy(false);
                                return;
                            }
 
@@ -2110,7 +2130,7 @@ const App: React.FC = () => {
                            });
                        } catch (err) {
                            console.error(err);
-                           isAsrProcessingRef.current = false;
+                           setAsrBusy(false);
                        }
                     } : undefined, true);
                } else {
