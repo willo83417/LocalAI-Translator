@@ -110,7 +110,7 @@ export const ASR_MODELS: AsrModel[] = [
         name: 'unsloth-whisper-small',
         quantization: {
             encoder_model: 'q4',
-            decoder_model_merged: 'q4',
+            decoder_model_merged: 'q4f16',
         },
         size: '~290 MB'
     },

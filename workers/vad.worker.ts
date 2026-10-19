@@ -79,7 +79,6 @@ function handleAudioFrame(buf: ArrayBuffer) {
             // SpeechEnd detected by VAD
             isRecording = false;
             const finalSamples = getActiveAudioSlice();
-            totalSamples = 0;
             (self as any).postMessage(
                 { type: 'speech-end', samples: finalSamples },
                 [finalSamples.buffer]

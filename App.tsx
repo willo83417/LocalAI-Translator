@@ -841,13 +841,11 @@ const App: React.FC = () => {
                     }
                     setIsLoading(false);
                     break;
-                case 'extract_text_error': {
-                    const err = payload?.error || 'Image processing error';
-                    showNotification(t('notifications.imageProcessingFailed', { errorMessage: err }), 'error');
+                case 'extract_text_error':
+                    showNotification(t('notifications.imageProcessingFailed', { errorMessage }), 'error');
 					setInputText(''); 
 					setIsLoading(false);
                     break;
-                }
                 case 'extract_text_cancelled':
                     setInputText('');
                     showNotification(t('notifications.imageProcessingCancelled') || 'Image processing cancelled', 'info');
@@ -1627,9 +1625,10 @@ const App: React.FC = () => {
                     if (mediaRecorderRef.current) {
                         (mediaRecorderRef.current as any).state = 'inactive';
                     }
-                    const finalBlob = finalSamples.length > 0
-                        ? float32SamplesToWavBlob(finalSamples, 16000)
-                        : new Blob([], { type: 'audio/wav' });
+                    let finalBlob = new Blob([], { type: 'audio/wav' });
+                    if (finalSamples.length > 0 && !preferRawFloat32) {
+                        finalBlob = float32SamplesToWavBlob(finalSamples, 16000);
+                    }
                     const stopCb = onStopRecordingCallbackRef.current as any;
                     cleanupAudioResources();
                     if (stopCb) {
@@ -1830,9 +1829,8 @@ const App: React.FC = () => {
 
             if (isOfflineAsrEnabled) {
                 // Offline ASR Path (Nemotron / Qwen3 / Whisper) - Direct zero-copy 16kHz Float32Array!
-                const isStreamingEngine = isRealtimeAsrEnabled && asrEngine !== 'whisper';
                 handleStartRecording(async (_audioBlob, rawSamples) => {
-                    if (!isStreamingEngine) {
+                    if (!isRealtimeAsrEnabled) {
                         setInputText(t('notifications.transcribing'));
                     }
                     setIsTranscribing(true);
@@ -1860,14 +1858,14 @@ const App: React.FC = () => {
                         const message = err instanceof Error ? err.message : 'Transcription failed.';
                         showNotification(message, 'error');
                     }
-                }, isStreamingEngine ? async (_audioBlob, rawSamples) => {
+                }, isRealtimeAsrEnabled ? async (_audioBlob, rawSamples) => {
                     if (isAsrProcessingRef.current) return;
                     try {
                         setAsrBusy(true);
                         const audioData = (rawSamples && rawSamples.length > 0)
                             ? rawSamples
                             : await processAudioForTranscription(_audioBlob, { noiseSuppression: false, gain: 1.0 });
-                        // Minimum samples check: 4800 samples (0.3s) for Nemotron, 8000 samples (0.5s) for Qwen3
+                        // Minimum samples check: 4800 samples (0.3s) for Nemotron, 8000 samples (0.5s) for Qwen3/Whisper
                         const minSamples = asrEngine === 'nemotron' ? 4800 : 8000;
                         if (audioData.length < minSamples) {
                             setAsrBusy(false);
@@ -2021,9 +2019,8 @@ const App: React.FC = () => {
             isReverseTranslateRef.current = true;
             
             if (isOfflineAsrEnabled) {
-                const isStreamingEngine = isRealtimeAsrEnabled && asrEngine !== 'whisper';
                  handleStartRecording(async (_audioBlob, rawSamples) => {
-                    if (!isStreamingEngine) {
+                    if (!isRealtimeAsrEnabled) {
                         setInputText(t('notifications.transcribing'));
                     }
                     setIsTranscribing(true);
@@ -2052,7 +2049,7 @@ const App: React.FC = () => {
                         const message = err instanceof Error ? err.message : 'Transcription failed.';
                         showNotification(message, 'error');
                     }
-                }, isStreamingEngine ? async (_audioBlob, rawSamples) => {
+                }, isRealtimeAsrEnabled ? async (_audioBlob, rawSamples) => {
                     if (isAsrProcessingRef.current) return;
                     try {
                         setAsrBusy(true);
