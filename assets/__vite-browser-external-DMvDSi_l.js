@@ -1,0 +1,1 @@
+import{t as e}from"./vad.worker-Cwn4uyAe.js";var t=/* @__PURE__ */ e(((e,t)=>{t.exports={}}));export default t();
