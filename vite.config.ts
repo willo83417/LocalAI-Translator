@@ -57,6 +57,7 @@ plugins: [
       registerType: 'autoUpdate',
       injectRegister: 'auto',
       workbox: {
+        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
         globPatterns: ['**/*.{js,css,html,svg,png,ico}'],
         // Do NOT add 'wasm' to globPatterns. WASM files are large and should be lazy-loaded
         // and cached by the browser's HTTP cache, not precached by the service worker.

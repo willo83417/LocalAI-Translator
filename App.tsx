@@ -833,19 +833,25 @@ const App: React.FC = () => {
                         return prev + payload.chunk;
                     });
                     break;
-                case 'extract_text_done':
-                    setInputText(payload.text);
+                case 'extract_text_done': {
+                    const text = payload.text?.trim() || '';
+                    setInputText(text);
                     setTranslatedText('');
-                    if (!payload.text.trim()) {
+                    if (!text) {
                         showNotification(t('notifications.noTextInImage'), "error");
+                    } else {
+                        performTranslateRef.current(text);
                     }
                     setIsLoading(false);
                     break;
-                case 'extract_text_error':
-                    showNotification(t('notifications.imageProcessingFailed', { errorMessage }), 'error');
+                }
+                case 'extract_text_error': {
+                    const errMsg = payload?.error || 'Unknown error occurred during text extraction.';
+                    showNotification(t('notifications.imageProcessingFailed', { errorMessage: errMsg }), 'error');
 					setInputText(''); 
 					setIsLoading(false);
                     break;
+                }
                 case 'extract_text_cancelled':
                     setInputText('');
                     showNotification(t('notifications.imageProcessingCancelled') || 'Image processing cancelled', 'info');
@@ -2197,6 +2203,34 @@ const App: React.FC = () => {
             const shouldUseLocalOcr = isOfflineModeEnabled || !isOnline;
 
             if (shouldUseLocalOcr) {
+                // If offline mode is active, image input is enabled (>0), and not in AR Lens overlay mode:
+                // bypass PaddleOCR completely and send image directly to Gemma-4 on-device multimodal!
+                if (isOfflineModeEnabled && offlineMaxNumImages > 0 && !enableLens) {
+                    if (isOfflineModelReady) {
+                        try {
+                            const res = await fetch(imageDataUrl);
+                            const blob = await res.blob();
+                            const imageBitmap = await createImageBitmap(blob);
+                            const worker = getOrCreateWorker();
+                            worker.postMessage({
+                                type: 'extractText',
+                                payload: { imageBitmap }
+                            }, [imageBitmap]);
+                            return;
+                        } catch (err) {
+                            console.error('Error preparing image for Gemma-4:', err);
+                            const msg = err instanceof Error ? err.message : 'Failed to prepare image for on-device multimodal model.';
+                            showNotification(msg, 'error');
+                            setIsLoading(false);
+                            return;
+                        }
+                    } else {
+                        showNotification(t('notifications.offlineModelNotReadyRecording'), 'error');
+                        setIsLoading(false);
+                        return;
+                    }
+                }
+
                 if (ocrEngineStatus !== 'ready') {
                     if (ocrEngineStatus === 'uninitialized') {
                         const ocrModelConfig = { key: selectedOcrModel, ...OCR_MODELS[selectedOcrModel].paths };
