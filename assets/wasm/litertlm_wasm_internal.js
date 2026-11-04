@@ -6977,9 +6977,9 @@ var WebGPU = {
         let configsPtr = 0;
         if (info.subgroupMatrixConfigs) {
           configCount = info.subgroupMatrixConfigs.length;
-          configsPtr = _malloc(configCount * 20);
+          configsPtr = _malloc(configCount * 28);
           for (const [i, cfg] of info.subgroupMatrixConfigs.entries()) {
-            const ptr = configsPtr + i * 20;
+            const ptr = configsPtr + i * 28;
             const componentType = WebGPU.SubgroupMatrixComponentType.indexOf(cfg.componentType);
             const resultComponentType = WebGPU.SubgroupMatrixComponentType.indexOf(cfg.resultComponentType);
             HEAP32[((ptr) >>> 2) >>> 0] = componentType;
@@ -7030,6 +7030,8 @@ var WebGPU = {
     21: "primitive-index",
     22: "texture-component-swizzle",
     23: "subgroup-size-control",
+    24: "texture-compression-unaligned",
+    25: "atomic-vec2u-min-max",
     327692: "chromium-experimental-unorm16-texture-formats",
     327729: "chromium-experimental-multi-draw-indirect",
     327732: "chromium-experimental-subgroup-matrix"
@@ -7648,14 +7650,6 @@ function _wgpuComputePassEncoderSetPipeline(passPtr, pipelinePtr) {
   pass.setPipeline(pipeline);
 }
 
-function _wgpuComputePipelineGetBindGroupLayout(pipelinePtr, groupIndex) {
-  pipelinePtr >>>= 0;
-  var pipeline = WebGPU.getJsObject(pipelinePtr);
-  var ptr = _emwgpuCreateBindGroupLayout(0);
-  WebGPU.Internals.jsObjectInsert(ptr, pipeline.getBindGroupLayout(groupIndex));
-  return ptr;
-}
-
 var _wgpuDeviceCreateBindGroup = function(devicePtr, descriptor) {
   devicePtr >>>= 0;
   descriptor >>>= 0;
@@ -8055,8 +8049,8 @@ Module["WebGPU"] = WebGPU;
 // End JS library exports
 // end include: postlibrary.js
 var ASM_CONSTS = {
-  2342345: () => !!Module["preinitializedWebGPUDevice"],
-  2342396: $0 => {
+  2410505: () => !!Module["preinitializedWebGPUDevice"],
+  2410556: $0 => {
     const device = WebGPU.getJsObject($0);
     return device.features.has("subgroups");
   }
@@ -8148,40 +8142,6 @@ function __asyncjs__ReadBufferDataJs(buffer_handle, data_ptr) {
 }
 
 __asyncjs__ReadBufferDataJs.sig = "vii";
-
-function __asyncjs__CallStreamWeightsOnWeb(tfl_ids, wgpu_buffers, offsets, lengths, count) {
-  return Asyncify.handleAsync(async () => {
-    const callback = Module.getStreamWeightsCallback();
-    if (typeof callback !== "function") {
-      console.error("Stream weights callback is not registered or is not a function");
-      return 1;
-    }
-    const view = new DataView(Module.HEAPU8.buffer);
-    const tflIdsPtr = tfl_ids >>> 0;
-    const wgpuBuffersPtr = wgpu_buffers >>> 0;
-    const offsetsPtr = offsets >>> 0;
-    const lengthsPtr = lengths >>> 0;
-    const tflIdsArray = new Int32Array(count);
-    const wgpuBuffersArray = new Uint32Array(count);
-    const offsetsArray = new Float64Array(count);
-    const lengthsArray = new Float64Array(count);
-    for (let i = 0; i < count; i++) {
-      tflIdsArray[i] = view.getInt32(tflIdsPtr + i * 4, true);
-      wgpuBuffersArray[i] = view.getUint32(wgpuBuffersPtr + i * 4, true);
-      offsetsArray[i] = view.getFloat64(offsetsPtr + i * 8, true);
-      lengthsArray[i] = view.getFloat64(lengthsPtr + i * 8, true);
-    }
-    try {
-      await callback(tflIdsArray, wgpuBuffersArray, offsetsArray, lengthsArray);
-    } catch (e) {
-      console.error("Error in streamWeightsOnWeb:", e);
-      return 1;
-    }
-    return 0;
-  });
-}
-
-__asyncjs__CallStreamWeightsOnWeb.sig = "iiiiii";
 
 // Imports from the Wasm binary.
 var _malloc, _free, _ma_device__on_notification_unlocked, _ma_malloc_emscripten, _ma_free_emscripten, _ma_device_process_pcm_frames_capture__webaudio, _ma_device_process_pcm_frames_playback__webaudio, _wgpuDeviceAddRef, _emwgpuCreateBindGroup, _emwgpuCreateBindGroupLayout, _emwgpuCreateCommandBuffer, _emwgpuCreateCommandEncoder, _emwgpuCreateComputePassEncoder, _emwgpuCreateComputePipeline, _emwgpuCreateExternalTexture, _emwgpuCreatePipelineLayout, _emwgpuCreateQuerySet, _emwgpuCreateRenderBundle, _emwgpuCreateRenderBundleEncoder, _emwgpuCreateRenderPassEncoder, _emwgpuCreateRenderPipeline, _emwgpuCreateSampler, _emwgpuCreateSurface, _emwgpuCreateTexture, _emwgpuCreateTextureView, _emwgpuCreateAdapter, _emwgpuImportBuffer, _emwgpuCreateDevice, _emwgpuCreateQueue, _emwgpuCreateShaderModule, _emwgpuOnCreateComputePipelineCompleted, _emwgpuOnMapAsyncCompleted, _emwgpuOnWorkDoneCompleted, ___getTypeName, _emscripten_builtin_memalign, _memalign, __emscripten_stack_restore, __emscripten_stack_alloc, _emscripten_stack_get_current, memory, _kVersionStampBuildChangelistStr, _kVersionStampCitcSnapshotStr, _kVersionStampCitcWorkspaceIdStr, _kVersionStampSourceUriStr, _kVersionStampBuildClientStr, _kVersionStampBuildClientMintStatusStr, _kVersionStampBuildCompilerStr, _kVersionStampBuildDateTimePstStr, _kVersionStampBuildDepotPathStr, _kVersionStampBuildIdStr, _kVersionStampBuildInfoStr, _kVersionStampBuildLabelStr, _kVersionStampBuildTargetStr, _kVersionStampBuildTimestampStr, _kVersionStampBuildToolStr, _kVersionStampG3BuildTargetStr, _kVersionStampVerifiableStr, _kVersionStampBuildFdoTypeStr, _kVersionStampBuildBaselineChangelistStr, _kVersionStampBuildLtoTypeStr, _kVersionStampBuildPropellerTypeStr, _kVersionStampBuildPghoTypeStr, _kVersionStampBuildFdoProfileChangelistStr, _kVersionStampBuildMemprofProfileChangelistStr, _kVersionStampBuildUsernameStr, _kVersionStampBuildHostnameStr, _kVersionStampBuildDirectoryStr, _kVersionStampBuildChangelistInt, _kVersionStampCitcSnapshotInt, _kVersionStampBuildClientMintStatusInt, _kVersionStampBuildTimestampInt, _kVersionStampVerifiableInt, _kVersionStampBuildCoverageEnabledInt, _kVersionStampBuildBaselineChangelistInt, _kVersionStampPrecookedTimestampStr, _kVersionStampPrecookedClientInfoStr, __indirect_function_table, _kVersionStampBuildHasHardeningProtobuf, wasmMemory, wasmTable;
@@ -8277,7 +8237,6 @@ var wasmImports = {
   /** @export */ JsGetDeviceMinSubgroupSize,
   /** @export */ ThrowError,
   /** @export */ _Unwind_RaiseException: __Unwind_RaiseException,
-  /** @export */ __asyncjs__CallStreamWeightsOnWeb,
   /** @export */ __asyncjs__ReadBufferDataJs,
   /** @export */ __syscall_dup: ___syscall_dup,
   /** @export */ __syscall_faccessat: ___syscall_faccessat,
@@ -8389,7 +8348,6 @@ var wasmImports = {
   /** @export */ wgpuComputePassEncoderEnd: _wgpuComputePassEncoderEnd,
   /** @export */ wgpuComputePassEncoderSetBindGroup: _wgpuComputePassEncoderSetBindGroup,
   /** @export */ wgpuComputePassEncoderSetPipeline: _wgpuComputePassEncoderSetPipeline,
-  /** @export */ wgpuComputePipelineGetBindGroupLayout: _wgpuComputePipelineGetBindGroupLayout,
   /** @export */ wgpuDeviceCreateBindGroup: _wgpuDeviceCreateBindGroup,
   /** @export */ wgpuDeviceCreateBindGroupLayout: _wgpuDeviceCreateBindGroupLayout,
   /** @export */ wgpuDeviceCreateCommandEncoder: _wgpuDeviceCreateCommandEncoder,

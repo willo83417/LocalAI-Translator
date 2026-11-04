@@ -247,7 +247,7 @@ function initRuntime() {
   if (!Module["noFSInit"] && !FS.initialized) FS.init();
   TTY.init();
   // End ATINITS hooks
-  wasmExports["Hb"]();
+  wasmExports["Fb"]();
   // Begin ATPOSTCTORS hooks
   FS.ignorePermissions = false;
 }
@@ -7119,9 +7119,9 @@ var WebGPU = {
         let configsPtr = 0;
         if (info.subgroupMatrixConfigs) {
           configCount = info.subgroupMatrixConfigs.length;
-          configsPtr = _malloc(configCount * 20);
+          configsPtr = _malloc(configCount * 28);
           for (const [i, cfg] of info.subgroupMatrixConfigs.entries()) {
-            const ptr = configsPtr + i * 20;
+            const ptr = configsPtr + i * 28;
             const componentType = WebGPU.SubgroupMatrixComponentType.indexOf(cfg.componentType);
             const resultComponentType = WebGPU.SubgroupMatrixComponentType.indexOf(cfg.resultComponentType);
             HEAP32[((ptr) >>> 2) >>> 0] = componentType;
@@ -7172,6 +7172,8 @@ var WebGPU = {
     21: "primitive-index",
     22: "texture-component-swizzle",
     23: "subgroup-size-control",
+    24: "texture-compression-unaligned",
+    25: "atomic-vec2u-min-max",
     327692: "chromium-experimental-unorm16-texture-formats",
     327729: "chromium-experimental-multi-draw-indirect",
     327732: "chromium-experimental-subgroup-matrix"
@@ -7790,14 +7792,6 @@ function _wgpuComputePassEncoderSetPipeline(passPtr, pipelinePtr) {
   pass.setPipeline(pipeline);
 }
 
-function _wgpuComputePipelineGetBindGroupLayout(pipelinePtr, groupIndex) {
-  pipelinePtr >>>= 0;
-  var pipeline = WebGPU.getJsObject(pipelinePtr);
-  var ptr = _emwgpuCreateBindGroupLayout(0);
-  WebGPU.Internals.jsObjectInsert(ptr, pipeline.getBindGroupLayout(groupIndex));
-  return ptr;
-}
-
 var _wgpuDeviceCreateBindGroup = function(devicePtr, descriptor) {
   devicePtr >>>= 0;
   descriptor >>>= 0;
@@ -8197,8 +8191,8 @@ Module["WebGPU"] = WebGPU;
 // End JS library exports
 // end include: postlibrary.js
 var ASM_CONSTS = {
-  2342345: () => !!Module["preinitializedWebGPUDevice"],
-  2342396: $0 => {
+  2410505: () => !!Module["preinitializedWebGPUDevice"],
+  2410556: $0 => {
     const device = WebGPU.getJsObject($0);
     return device.features.has("subgroups");
   }
@@ -8271,88 +8265,58 @@ function __asyncjs__ReadBufferDataJs(buffer_handle, data_ptr) {
   });
 }
 
-function __asyncjs__CallStreamWeightsOnWeb(tfl_ids, wgpu_buffers, offsets, lengths, count) {
-  return Asyncify.handleAsync(async () => {
-    const callback = Module.getStreamWeightsCallback();
-    if (typeof callback !== "function") {
-      console.error("Stream weights callback is not registered or is not a function");
-      return 1;
-    }
-    const view = new DataView(Module.HEAPU8.buffer);
-    const tflIdsPtr = tfl_ids >>> 0;
-    const wgpuBuffersPtr = wgpu_buffers >>> 0;
-    const offsetsPtr = offsets >>> 0;
-    const lengthsPtr = lengths >>> 0;
-    const tflIdsArray = new Int32Array(count);
-    const wgpuBuffersArray = new Uint32Array(count);
-    const offsetsArray = new Float64Array(count);
-    const lengthsArray = new Float64Array(count);
-    for (let i = 0; i < count; i++) {
-      tflIdsArray[i] = view.getInt32(tflIdsPtr + i * 4, true);
-      wgpuBuffersArray[i] = view.getUint32(wgpuBuffersPtr + i * 4, true);
-      offsetsArray[i] = view.getFloat64(offsetsPtr + i * 8, true);
-      lengthsArray[i] = view.getFloat64(lengthsPtr + i * 8, true);
-    }
-    try {
-      await callback(tflIdsArray, wgpuBuffersArray, offsetsArray, lengthsArray);
-    } catch (e) {
-      console.error("Error in streamWeightsOnWeb:", e);
-      return 1;
-    }
-    return 0;
-  });
-}
-
 // Imports from the Wasm binary.
-var _malloc, _free, _ma_device__on_notification_unlocked, _ma_malloc_emscripten, _ma_free_emscripten, _ma_device_process_pcm_frames_capture__webaudio, _ma_device_process_pcm_frames_playback__webaudio, _wgpuDeviceAddRef, _emwgpuCreateBindGroup, _emwgpuCreateBindGroupLayout, _emwgpuCreateCommandBuffer, _emwgpuCreateCommandEncoder, _emwgpuCreateComputePassEncoder, _emwgpuCreateComputePipeline, _emwgpuCreateExternalTexture, _emwgpuCreatePipelineLayout, _emwgpuCreateQuerySet, _emwgpuCreateRenderBundle, _emwgpuCreateRenderBundleEncoder, _emwgpuCreateRenderPassEncoder, _emwgpuCreateRenderPipeline, _emwgpuCreateSampler, _emwgpuCreateSurface, _emwgpuCreateTexture, _emwgpuCreateTextureView, _emwgpuCreateAdapter, _emwgpuImportBuffer, _emwgpuCreateDevice, _emwgpuCreateQueue, _emwgpuCreateShaderModule, _emwgpuOnCreateComputePipelineCompleted, _emwgpuOnMapAsyncCompleted, _emwgpuOnWorkDoneCompleted, ___getTypeName, _emscripten_builtin_memalign, _memalign, __emscripten_stack_restore, __emscripten_stack_alloc, _emscripten_stack_get_current, dynCall_vi, dynCall_v, dynCall_vii, dynCall_ii, dynCall_iii, dynCall_iiii, dynCall_viii, dynCall_i, dynCall_fi, dynCall_fii, dynCall_vif, dynCall_viif, dynCall_dii, dynCall_viid, dynCall_iiiiiiii, dynCall_viiiiiii, dynCall_viiii, dynCall_iiiiii, dynCall_viiiii, dynCall_iiiii, dynCall_viiif, dynCall_iiiif, dynCall_iiijj, dynCall_iijj, dynCall_viijj, dynCall_viiij, dynCall_jiii, dynCall_jiji, dynCall_vijj, dynCall_ji, dynCall_jij, dynCall_viijii, dynCall_iiiijij, dynCall_jiij, dynCall_jii, dynCall_vij, dynCall_viij, dynCall_iij, dynCall_viiiiiiii, dynCall_iiji, dynCall_iiiiiiiii, dynCall_iiiiiii, dynCall_iiiji, dynCall_ff, dynCall_fff, dynCall_viiiiii, dynCall_iiiiiiiiiii, dynCall_iiiiiiiiiiii, dynCall_iiiiiiiiiiiii, dynCall_iiif, dynCall_iiiiiiiiii, dynCall_iiiiiiiiiiiiiii, dynCall_viiiiiiiiii, dynCall_viiiiiiiiiii, dynCall_viji, dynCall_iiiijj, dynCall_viiijjj, dynCall_viifii, dynCall_vfiii, dynCall_jjj, dynCall_fiii, dynCall_viiiiiiiii, dynCall_viiiffii, dynCall_iiiiiffi, dynCall_viiiiiff, dynCall_viiiiiiiiiiiii, dynCall_viiiiiiiiiiii, dynCall_viiiiiiiiiiiiiiiii, dynCall_iifff, dynCall_iiff, dynCall_iiifiii, dynCall_iiffi, dynCall_iiffii, dynCall_viiiiiiiiiiiiii, dynCall_iif, dynCall_viiifiii, dynCall_fiif, dynCall_iiiifi, dynCall_iiiifiii, dynCall_iiifi, dynCall_viiiif, dynCall_viiiifii, dynCall_vifi, dynCall_vidi, dynCall_vijjj, dynCall_vj, dynCall_iidiiiii, dynCall_iiiiij, dynCall_iiiiid, dynCall_iiiiijj, dynCall_iiiiiijj, _asyncify_start_unwind, _asyncify_stop_unwind, _asyncify_start_rewind, _asyncify_stop_rewind, memory, _kVersionStampBuildChangelistStr, _kVersionStampCitcSnapshotStr, _kVersionStampCitcWorkspaceIdStr, _kVersionStampSourceUriStr, _kVersionStampBuildClientStr, _kVersionStampBuildClientMintStatusStr, _kVersionStampBuildCompilerStr, _kVersionStampBuildDateTimePstStr, _kVersionStampBuildDepotPathStr, _kVersionStampBuildIdStr, _kVersionStampBuildInfoStr, _kVersionStampBuildLabelStr, _kVersionStampBuildTargetStr, _kVersionStampBuildTimestampStr, _kVersionStampBuildToolStr, _kVersionStampG3BuildTargetStr, _kVersionStampVerifiableStr, _kVersionStampBuildFdoTypeStr, _kVersionStampBuildBaselineChangelistStr, _kVersionStampBuildLtoTypeStr, _kVersionStampBuildPropellerTypeStr, _kVersionStampBuildPghoTypeStr, _kVersionStampBuildFdoProfileChangelistStr, _kVersionStampBuildMemprofProfileChangelistStr, _kVersionStampBuildUsernameStr, _kVersionStampBuildHostnameStr, _kVersionStampBuildDirectoryStr, _kVersionStampBuildChangelistInt, _kVersionStampCitcSnapshotInt, _kVersionStampBuildClientMintStatusInt, _kVersionStampBuildTimestampInt, _kVersionStampVerifiableInt, _kVersionStampBuildCoverageEnabledInt, _kVersionStampBuildBaselineChangelistInt, _kVersionStampPrecookedTimestampStr, _kVersionStampPrecookedClientInfoStr, __indirect_function_table, _kVersionStampBuildHasHardeningProtobuf, wasmMemory;
+var _malloc, _free, _ma_device__on_notification_unlocked, _ma_malloc_emscripten, _ma_free_emscripten, _ma_device_process_pcm_frames_capture__webaudio, _ma_device_process_pcm_frames_playback__webaudio, _wgpuDeviceAddRef, _emwgpuCreateBindGroup, _emwgpuCreateBindGroupLayout, _emwgpuCreateCommandBuffer, _emwgpuCreateCommandEncoder, _emwgpuCreateComputePassEncoder, _emwgpuCreateComputePipeline, _emwgpuCreateExternalTexture, _emwgpuCreatePipelineLayout, _emwgpuCreateQuerySet, _emwgpuCreateRenderBundle, _emwgpuCreateRenderBundleEncoder, _emwgpuCreateRenderPassEncoder, _emwgpuCreateRenderPipeline, _emwgpuCreateSampler, _emwgpuCreateSurface, _emwgpuCreateTexture, _emwgpuCreateTextureView, _emwgpuCreateAdapter, _emwgpuImportBuffer, _emwgpuCreateDevice, _emwgpuCreateQueue, _emwgpuCreateShaderModule, _emwgpuOnCreateComputePipelineCompleted, _emwgpuOnMapAsyncCompleted, _emwgpuOnWorkDoneCompleted, ___getTypeName, _emscripten_builtin_memalign, _memalign, __emscripten_stack_restore, __emscripten_stack_alloc, _emscripten_stack_get_current, dynCall_vi, dynCall_v, dynCall_vii, dynCall_ii, dynCall_iii, dynCall_iiii, dynCall_viii, dynCall_iiiiii, dynCall_viiiii, dynCall_i, dynCall_fi, dynCall_fii, dynCall_vif, dynCall_viif, dynCall_dii, dynCall_viid, dynCall_iiiiiiii, dynCall_viiiiiii, dynCall_viiiiii, dynCall_viiii, dynCall_iiiii, dynCall_viiif, dynCall_iiiif, dynCall_iiijj, dynCall_iijj, dynCall_viijj, dynCall_jiii, dynCall_viiij, dynCall_jiji, dynCall_vijj, dynCall_ji, dynCall_jij, dynCall_viijii, dynCall_iiiijij, dynCall_jiij, dynCall_jii, dynCall_vij, dynCall_viij, dynCall_iij, dynCall_viiiiiiii, dynCall_iiji, dynCall_iiiiiiiii, dynCall_iiiiiii, dynCall_iiiji, dynCall_ff, dynCall_fff, dynCall_iiiiiiiiiii, dynCall_iiiiiiiiiiii, dynCall_iiiiiiiiiiiii, dynCall_iiiiiiiiiiiiiii, dynCall_viiiiiiiiii, dynCall_viiiiiiiiiii, dynCall_iiiiiiiiii, dynCall_iiif, dynCall_viji, dynCall_iiiijj, dynCall_viiijjj, dynCall_viifii, dynCall_jjj, dynCall_fiii, dynCall_viiiiiiiii, dynCall_viiiffii, dynCall_iiiiiffi, dynCall_viiiiiff, dynCall_viiiiiiiiiiiii, dynCall_viiiiiiiiiiii, dynCall_viiiiiiiiiiiiiiiii, dynCall_iifff, dynCall_iiff, dynCall_iiifiii, dynCall_iiffi, dynCall_iiffii, dynCall_viiiiiiiiiiiiii, dynCall_iif, dynCall_viiiiiiiiiiiiiii, dynCall_viiifiii, dynCall_fiif, dynCall_iiiifi, dynCall_iiiifiii, dynCall_iiifi, dynCall_viiiif, dynCall_viiiifii, dynCall_vifi, dynCall_vidi, dynCall_vijjj, dynCall_vj, dynCall_iidiiiii, dynCall_iiiiij, dynCall_iiiiid, dynCall_iiiiijj, dynCall_iiiiiijj, _asyncify_start_unwind, _asyncify_stop_unwind, _asyncify_start_rewind, _asyncify_stop_rewind, memory, _kVersionStampBuildChangelistStr, _kVersionStampCitcSnapshotStr, _kVersionStampCitcWorkspaceIdStr, _kVersionStampSourceUriStr, _kVersionStampBuildClientStr, _kVersionStampBuildClientMintStatusStr, _kVersionStampBuildCompilerStr, _kVersionStampBuildDateTimePstStr, _kVersionStampBuildDepotPathStr, _kVersionStampBuildIdStr, _kVersionStampBuildInfoStr, _kVersionStampBuildLabelStr, _kVersionStampBuildTargetStr, _kVersionStampBuildTimestampStr, _kVersionStampBuildToolStr, _kVersionStampG3BuildTargetStr, _kVersionStampVerifiableStr, _kVersionStampBuildFdoTypeStr, _kVersionStampBuildBaselineChangelistStr, _kVersionStampBuildLtoTypeStr, _kVersionStampBuildPropellerTypeStr, _kVersionStampBuildPghoTypeStr, _kVersionStampBuildFdoProfileChangelistStr, _kVersionStampBuildMemprofProfileChangelistStr, _kVersionStampBuildUsernameStr, _kVersionStampBuildHostnameStr, _kVersionStampBuildDirectoryStr, _kVersionStampBuildChangelistInt, _kVersionStampCitcSnapshotInt, _kVersionStampBuildClientMintStatusInt, _kVersionStampBuildTimestampInt, _kVersionStampVerifiableInt, _kVersionStampBuildCoverageEnabledInt, _kVersionStampBuildBaselineChangelistInt, _kVersionStampPrecookedTimestampStr, _kVersionStampPrecookedClientInfoStr, __indirect_function_table, _kVersionStampBuildHasHardeningProtobuf, wasmMemory;
 
 function assignWasmExports(wasmExports) {
-  _malloc = Module["_malloc"] = wasmExports["qc"];
-  _free = Module["_free"] = wasmExports["rc"];
-  _ma_device__on_notification_unlocked = Module["_ma_device__on_notification_unlocked"] = wasmExports["sc"];
-  _ma_malloc_emscripten = Module["_ma_malloc_emscripten"] = wasmExports["tc"];
-  _ma_free_emscripten = Module["_ma_free_emscripten"] = wasmExports["uc"];
-  _ma_device_process_pcm_frames_capture__webaudio = Module["_ma_device_process_pcm_frames_capture__webaudio"] = wasmExports["vc"];
-  _ma_device_process_pcm_frames_playback__webaudio = Module["_ma_device_process_pcm_frames_playback__webaudio"] = wasmExports["wc"];
-  _wgpuDeviceAddRef = wasmExports["xc"];
-  _emwgpuCreateBindGroup = wasmExports["yc"];
-  _emwgpuCreateBindGroupLayout = wasmExports["zc"];
-  _emwgpuCreateCommandBuffer = wasmExports["Ac"];
-  _emwgpuCreateCommandEncoder = wasmExports["Bc"];
-  _emwgpuCreateComputePassEncoder = wasmExports["Cc"];
-  _emwgpuCreateComputePipeline = wasmExports["Dc"];
-  _emwgpuCreateExternalTexture = wasmExports["Ec"];
-  _emwgpuCreatePipelineLayout = wasmExports["Fc"];
-  _emwgpuCreateQuerySet = wasmExports["Gc"];
-  _emwgpuCreateRenderBundle = wasmExports["Hc"];
-  _emwgpuCreateRenderBundleEncoder = wasmExports["Ic"];
-  _emwgpuCreateRenderPassEncoder = wasmExports["Jc"];
-  _emwgpuCreateRenderPipeline = wasmExports["Kc"];
-  _emwgpuCreateSampler = wasmExports["Lc"];
-  _emwgpuCreateSurface = wasmExports["Mc"];
-  _emwgpuCreateTexture = wasmExports["Nc"];
-  _emwgpuCreateTextureView = wasmExports["Oc"];
-  _emwgpuCreateAdapter = wasmExports["Pc"];
-  _emwgpuImportBuffer = wasmExports["Qc"];
-  _emwgpuCreateDevice = wasmExports["Rc"];
-  _emwgpuCreateQueue = wasmExports["Sc"];
-  _emwgpuCreateShaderModule = wasmExports["Tc"];
-  _emwgpuOnCreateComputePipelineCompleted = wasmExports["Uc"];
-  _emwgpuOnMapAsyncCompleted = wasmExports["Vc"];
-  _emwgpuOnWorkDoneCompleted = wasmExports["Wc"];
-  ___getTypeName = wasmExports["Yc"];
-  _emscripten_builtin_memalign = wasmExports["Zc"];
-  _memalign = wasmExports["_c"];
-  __emscripten_stack_restore = wasmExports["$c"];
-  __emscripten_stack_alloc = wasmExports["ad"];
-  _emscripten_stack_get_current = wasmExports["bd"];
-  dynCall_vi = dynCalls["vi"] = wasmExports["cd"];
-  dynCall_v = dynCalls["v"] = wasmExports["dd"];
-  dynCall_vii = dynCalls["vii"] = wasmExports["ed"];
-  dynCall_ii = dynCalls["ii"] = wasmExports["fd"];
-  dynCall_iii = dynCalls["iii"] = wasmExports["gd"];
-  dynCall_iiii = dynCalls["iiii"] = wasmExports["hd"];
-  dynCall_viii = dynCalls["viii"] = wasmExports["id"];
+  _malloc = Module["_malloc"] = wasmExports["oc"];
+  _free = Module["_free"] = wasmExports["pc"];
+  _ma_device__on_notification_unlocked = Module["_ma_device__on_notification_unlocked"] = wasmExports["qc"];
+  _ma_malloc_emscripten = Module["_ma_malloc_emscripten"] = wasmExports["rc"];
+  _ma_free_emscripten = Module["_ma_free_emscripten"] = wasmExports["sc"];
+  _ma_device_process_pcm_frames_capture__webaudio = Module["_ma_device_process_pcm_frames_capture__webaudio"] = wasmExports["tc"];
+  _ma_device_process_pcm_frames_playback__webaudio = Module["_ma_device_process_pcm_frames_playback__webaudio"] = wasmExports["uc"];
+  _wgpuDeviceAddRef = wasmExports["vc"];
+  _emwgpuCreateBindGroup = wasmExports["wc"];
+  _emwgpuCreateBindGroupLayout = wasmExports["xc"];
+  _emwgpuCreateCommandBuffer = wasmExports["yc"];
+  _emwgpuCreateCommandEncoder = wasmExports["zc"];
+  _emwgpuCreateComputePassEncoder = wasmExports["Ac"];
+  _emwgpuCreateComputePipeline = wasmExports["Bc"];
+  _emwgpuCreateExternalTexture = wasmExports["Cc"];
+  _emwgpuCreatePipelineLayout = wasmExports["Dc"];
+  _emwgpuCreateQuerySet = wasmExports["Ec"];
+  _emwgpuCreateRenderBundle = wasmExports["Fc"];
+  _emwgpuCreateRenderBundleEncoder = wasmExports["Gc"];
+  _emwgpuCreateRenderPassEncoder = wasmExports["Hc"];
+  _emwgpuCreateRenderPipeline = wasmExports["Ic"];
+  _emwgpuCreateSampler = wasmExports["Jc"];
+  _emwgpuCreateSurface = wasmExports["Kc"];
+  _emwgpuCreateTexture = wasmExports["Lc"];
+  _emwgpuCreateTextureView = wasmExports["Mc"];
+  _emwgpuCreateAdapter = wasmExports["Nc"];
+  _emwgpuImportBuffer = wasmExports["Oc"];
+  _emwgpuCreateDevice = wasmExports["Pc"];
+  _emwgpuCreateQueue = wasmExports["Qc"];
+  _emwgpuCreateShaderModule = wasmExports["Rc"];
+  _emwgpuOnCreateComputePipelineCompleted = wasmExports["Sc"];
+  _emwgpuOnMapAsyncCompleted = wasmExports["Tc"];
+  _emwgpuOnWorkDoneCompleted = wasmExports["Uc"];
+  ___getTypeName = wasmExports["Wc"];
+  _emscripten_builtin_memalign = wasmExports["Xc"];
+  _memalign = wasmExports["Yc"];
+  __emscripten_stack_restore = wasmExports["Zc"];
+  __emscripten_stack_alloc = wasmExports["_c"];
+  _emscripten_stack_get_current = wasmExports["$c"];
+  dynCall_vi = dynCalls["vi"] = wasmExports["ad"];
+  dynCall_v = dynCalls["v"] = wasmExports["bd"];
+  dynCall_vii = dynCalls["vii"] = wasmExports["cd"];
+  dynCall_ii = dynCalls["ii"] = wasmExports["dd"];
+  dynCall_iii = dynCalls["iii"] = wasmExports["ed"];
+  dynCall_iiii = dynCalls["iiii"] = wasmExports["fd"];
+  dynCall_viii = dynCalls["viii"] = wasmExports["gd"];
+  dynCall_iiiiii = dynCalls["iiiiii"] = wasmExports["hd"];
+  dynCall_viiiii = dynCalls["viiiii"] = wasmExports["id"];
   dynCall_i = dynCalls["i"] = wasmExports["jd"];
   dynCall_fi = dynCalls["fi"] = wasmExports["kd"];
   dynCall_fii = dynCalls["fii"] = wasmExports["ld"];
@@ -8362,211 +8326,208 @@ function assignWasmExports(wasmExports) {
   dynCall_viid = dynCalls["viid"] = wasmExports["pd"];
   dynCall_iiiiiiii = dynCalls["iiiiiiii"] = wasmExports["qd"];
   dynCall_viiiiiii = dynCalls["viiiiiii"] = wasmExports["rd"];
-  dynCall_viiii = dynCalls["viiii"] = wasmExports["sd"];
-  dynCall_iiiiii = dynCalls["iiiiii"] = wasmExports["td"];
-  dynCall_viiiii = dynCalls["viiiii"] = wasmExports["ud"];
-  dynCall_iiiii = dynCalls["iiiii"] = wasmExports["vd"];
-  dynCall_viiif = dynCalls["viiif"] = wasmExports["wd"];
-  dynCall_iiiif = dynCalls["iiiif"] = wasmExports["xd"];
-  dynCall_iiijj = dynCalls["iiijj"] = wasmExports["yd"];
-  dynCall_iijj = dynCalls["iijj"] = wasmExports["zd"];
-  dynCall_viijj = dynCalls["viijj"] = wasmExports["Ad"];
+  dynCall_viiiiii = dynCalls["viiiiii"] = wasmExports["sd"];
+  dynCall_viiii = dynCalls["viiii"] = wasmExports["td"];
+  dynCall_iiiii = dynCalls["iiiii"] = wasmExports["ud"];
+  dynCall_viiif = dynCalls["viiif"] = wasmExports["vd"];
+  dynCall_iiiif = dynCalls["iiiif"] = wasmExports["wd"];
+  dynCall_iiijj = dynCalls["iiijj"] = wasmExports["xd"];
+  dynCall_iijj = dynCalls["iijj"] = wasmExports["yd"];
+  dynCall_viijj = dynCalls["viijj"] = wasmExports["zd"];
+  dynCall_jiii = dynCalls["jiii"] = wasmExports["Ad"];
   dynCall_viiij = dynCalls["viiij"] = wasmExports["Bd"];
-  dynCall_jiii = dynCalls["jiii"] = wasmExports["Cd"];
-  dynCall_jiji = dynCalls["jiji"] = wasmExports["Dd"];
-  dynCall_vijj = dynCalls["vijj"] = wasmExports["Ed"];
-  dynCall_ji = dynCalls["ji"] = wasmExports["Fd"];
-  dynCall_jij = dynCalls["jij"] = wasmExports["Gd"];
-  dynCall_viijii = dynCalls["viijii"] = wasmExports["Hd"];
-  dynCall_iiiijij = dynCalls["iiiijij"] = wasmExports["Id"];
-  dynCall_jiij = dynCalls["jiij"] = wasmExports["Jd"];
-  dynCall_jii = dynCalls["jii"] = wasmExports["Kd"];
-  dynCall_vij = dynCalls["vij"] = wasmExports["Ld"];
-  dynCall_viij = dynCalls["viij"] = wasmExports["Md"];
-  dynCall_iij = dynCalls["iij"] = wasmExports["Nd"];
-  dynCall_viiiiiiii = dynCalls["viiiiiiii"] = wasmExports["Od"];
-  dynCall_iiji = dynCalls["iiji"] = wasmExports["Pd"];
-  dynCall_iiiiiiiii = dynCalls["iiiiiiiii"] = wasmExports["Qd"];
-  dynCall_iiiiiii = dynCalls["iiiiiii"] = wasmExports["Rd"];
-  dynCall_iiiji = dynCalls["iiiji"] = wasmExports["Sd"];
-  dynCall_ff = dynCalls["ff"] = wasmExports["Td"];
-  dynCall_fff = dynCalls["fff"] = wasmExports["Ud"];
-  dynCall_viiiiii = dynCalls["viiiiii"] = wasmExports["Vd"];
-  dynCall_iiiiiiiiiii = dynCalls["iiiiiiiiiii"] = wasmExports["Wd"];
-  dynCall_iiiiiiiiiiii = dynCalls["iiiiiiiiiiii"] = wasmExports["Xd"];
-  dynCall_iiiiiiiiiiiii = dynCalls["iiiiiiiiiiiii"] = wasmExports["Yd"];
-  dynCall_iiif = dynCalls["iiif"] = wasmExports["Zd"];
+  dynCall_jiji = dynCalls["jiji"] = wasmExports["Cd"];
+  dynCall_vijj = dynCalls["vijj"] = wasmExports["Dd"];
+  dynCall_ji = dynCalls["ji"] = wasmExports["Ed"];
+  dynCall_jij = dynCalls["jij"] = wasmExports["Fd"];
+  dynCall_viijii = dynCalls["viijii"] = wasmExports["Gd"];
+  dynCall_iiiijij = dynCalls["iiiijij"] = wasmExports["Hd"];
+  dynCall_jiij = dynCalls["jiij"] = wasmExports["Id"];
+  dynCall_jii = dynCalls["jii"] = wasmExports["Jd"];
+  dynCall_vij = dynCalls["vij"] = wasmExports["Kd"];
+  dynCall_viij = dynCalls["viij"] = wasmExports["Ld"];
+  dynCall_iij = dynCalls["iij"] = wasmExports["Md"];
+  dynCall_viiiiiiii = dynCalls["viiiiiiii"] = wasmExports["Nd"];
+  dynCall_iiji = dynCalls["iiji"] = wasmExports["Od"];
+  dynCall_iiiiiiiii = dynCalls["iiiiiiiii"] = wasmExports["Pd"];
+  dynCall_iiiiiii = dynCalls["iiiiiii"] = wasmExports["Qd"];
+  dynCall_iiiji = dynCalls["iiiji"] = wasmExports["Rd"];
+  dynCall_ff = dynCalls["ff"] = wasmExports["Sd"];
+  dynCall_fff = dynCalls["fff"] = wasmExports["Td"];
+  dynCall_iiiiiiiiiii = dynCalls["iiiiiiiiiii"] = wasmExports["Ud"];
+  dynCall_iiiiiiiiiiii = dynCalls["iiiiiiiiiiii"] = wasmExports["Vd"];
+  dynCall_iiiiiiiiiiiii = dynCalls["iiiiiiiiiiiii"] = wasmExports["Wd"];
+  dynCall_iiiiiiiiiiiiiii = dynCalls["iiiiiiiiiiiiiii"] = wasmExports["Xd"];
+  dynCall_viiiiiiiiii = dynCalls["viiiiiiiiii"] = wasmExports["Yd"];
+  dynCall_viiiiiiiiiii = dynCalls["viiiiiiiiiii"] = wasmExports["Zd"];
   dynCall_iiiiiiiiii = dynCalls["iiiiiiiiii"] = wasmExports["_d"];
-  dynCall_iiiiiiiiiiiiiii = dynCalls["iiiiiiiiiiiiiii"] = wasmExports["$d"];
-  dynCall_viiiiiiiiii = dynCalls["viiiiiiiiii"] = wasmExports["ae"];
-  dynCall_viiiiiiiiiii = dynCalls["viiiiiiiiiii"] = wasmExports["be"];
-  dynCall_viji = dynCalls["viji"] = wasmExports["ce"];
-  dynCall_iiiijj = dynCalls["iiiijj"] = wasmExports["de"];
-  dynCall_viiijjj = dynCalls["viiijjj"] = wasmExports["ee"];
-  dynCall_viifii = dynCalls["viifii"] = wasmExports["fe"];
-  dynCall_vfiii = dynCalls["vfiii"] = wasmExports["ge"];
-  dynCall_jjj = dynCalls["jjj"] = wasmExports["he"];
-  dynCall_fiii = dynCalls["fiii"] = wasmExports["ie"];
-  dynCall_viiiiiiiii = dynCalls["viiiiiiiii"] = wasmExports["je"];
-  dynCall_viiiffii = dynCalls["viiiffii"] = wasmExports["ke"];
-  dynCall_iiiiiffi = dynCalls["iiiiiffi"] = wasmExports["le"];
-  dynCall_viiiiiff = dynCalls["viiiiiff"] = wasmExports["me"];
-  dynCall_viiiiiiiiiiiii = dynCalls["viiiiiiiiiiiii"] = wasmExports["ne"];
-  dynCall_viiiiiiiiiiii = dynCalls["viiiiiiiiiiii"] = wasmExports["oe"];
-  dynCall_viiiiiiiiiiiiiiiii = dynCalls["viiiiiiiiiiiiiiiii"] = wasmExports["pe"];
-  dynCall_iifff = dynCalls["iifff"] = wasmExports["qe"];
-  dynCall_iiff = dynCalls["iiff"] = wasmExports["re"];
-  dynCall_iiifiii = dynCalls["iiifiii"] = wasmExports["se"];
-  dynCall_iiffi = dynCalls["iiffi"] = wasmExports["te"];
-  dynCall_iiffii = dynCalls["iiffii"] = wasmExports["ue"];
-  dynCall_viiiiiiiiiiiiii = dynCalls["viiiiiiiiiiiiii"] = wasmExports["ve"];
-  dynCall_iif = dynCalls["iif"] = wasmExports["we"];
-  dynCall_viiifiii = dynCalls["viiifiii"] = wasmExports["xe"];
-  dynCall_fiif = dynCalls["fiif"] = wasmExports["ye"];
-  dynCall_iiiifi = dynCalls["iiiifi"] = wasmExports["ze"];
-  dynCall_iiiifiii = dynCalls["iiiifiii"] = wasmExports["Ae"];
-  dynCall_iiifi = dynCalls["iiifi"] = wasmExports["Be"];
-  dynCall_viiiif = dynCalls["viiiif"] = wasmExports["Ce"];
-  dynCall_viiiifii = dynCalls["viiiifii"] = wasmExports["De"];
-  dynCall_vifi = dynCalls["vifi"] = wasmExports["Ee"];
-  dynCall_vidi = dynCalls["vidi"] = wasmExports["Fe"];
-  dynCall_vijjj = dynCalls["vijjj"] = wasmExports["Ge"];
-  dynCall_vj = dynCalls["vj"] = wasmExports["He"];
-  dynCall_iidiiiii = dynCalls["iidiiiii"] = wasmExports["Ie"];
-  dynCall_iiiiij = dynCalls["iiiiij"] = wasmExports["Je"];
-  dynCall_iiiiid = dynCalls["iiiiid"] = wasmExports["Ke"];
-  dynCall_iiiiijj = dynCalls["iiiiijj"] = wasmExports["Le"];
-  dynCall_iiiiiijj = dynCalls["iiiiiijj"] = wasmExports["Me"];
-  _asyncify_start_unwind = wasmExports["Ne"];
-  _asyncify_stop_unwind = wasmExports["Oe"];
-  _asyncify_start_rewind = wasmExports["Pe"];
-  _asyncify_stop_rewind = wasmExports["Qe"];
-  memory = wasmMemory = wasmExports["Gb"];
-  _kVersionStampBuildChangelistStr = Module["_kVersionStampBuildChangelistStr"] = (wasmExports["Ib"].value) >>> 0;
-  _kVersionStampCitcSnapshotStr = Module["_kVersionStampCitcSnapshotStr"] = (wasmExports["Jb"].value) >>> 0;
-  _kVersionStampCitcWorkspaceIdStr = Module["_kVersionStampCitcWorkspaceIdStr"] = (wasmExports["Kb"].value) >>> 0;
-  _kVersionStampSourceUriStr = Module["_kVersionStampSourceUriStr"] = (wasmExports["Lb"].value) >>> 0;
-  _kVersionStampBuildClientStr = Module["_kVersionStampBuildClientStr"] = (wasmExports["Mb"].value) >>> 0;
-  _kVersionStampBuildClientMintStatusStr = Module["_kVersionStampBuildClientMintStatusStr"] = (wasmExports["Nb"].value) >>> 0;
-  _kVersionStampBuildCompilerStr = Module["_kVersionStampBuildCompilerStr"] = (wasmExports["Ob"].value) >>> 0;
-  _kVersionStampBuildDateTimePstStr = Module["_kVersionStampBuildDateTimePstStr"] = (wasmExports["Pb"].value) >>> 0;
-  _kVersionStampBuildDepotPathStr = Module["_kVersionStampBuildDepotPathStr"] = (wasmExports["Qb"].value) >>> 0;
-  _kVersionStampBuildIdStr = Module["_kVersionStampBuildIdStr"] = (wasmExports["Rb"].value) >>> 0;
-  _kVersionStampBuildInfoStr = Module["_kVersionStampBuildInfoStr"] = (wasmExports["Sb"].value) >>> 0;
-  _kVersionStampBuildLabelStr = Module["_kVersionStampBuildLabelStr"] = (wasmExports["Tb"].value) >>> 0;
-  _kVersionStampBuildTargetStr = Module["_kVersionStampBuildTargetStr"] = (wasmExports["Ub"].value) >>> 0;
-  _kVersionStampBuildTimestampStr = Module["_kVersionStampBuildTimestampStr"] = (wasmExports["Vb"].value) >>> 0;
-  _kVersionStampBuildToolStr = Module["_kVersionStampBuildToolStr"] = (wasmExports["Wb"].value) >>> 0;
-  _kVersionStampG3BuildTargetStr = Module["_kVersionStampG3BuildTargetStr"] = (wasmExports["Xb"].value) >>> 0;
-  _kVersionStampVerifiableStr = Module["_kVersionStampVerifiableStr"] = (wasmExports["Yb"].value) >>> 0;
-  _kVersionStampBuildFdoTypeStr = Module["_kVersionStampBuildFdoTypeStr"] = (wasmExports["Zb"].value) >>> 0;
-  _kVersionStampBuildBaselineChangelistStr = Module["_kVersionStampBuildBaselineChangelistStr"] = (wasmExports["_b"].value) >>> 0;
-  _kVersionStampBuildLtoTypeStr = Module["_kVersionStampBuildLtoTypeStr"] = (wasmExports["$b"].value) >>> 0;
-  _kVersionStampBuildPropellerTypeStr = Module["_kVersionStampBuildPropellerTypeStr"] = (wasmExports["ac"].value) >>> 0;
-  _kVersionStampBuildPghoTypeStr = Module["_kVersionStampBuildPghoTypeStr"] = (wasmExports["bc"].value) >>> 0;
-  _kVersionStampBuildFdoProfileChangelistStr = Module["_kVersionStampBuildFdoProfileChangelistStr"] = (wasmExports["cc"].value) >>> 0;
-  _kVersionStampBuildMemprofProfileChangelistStr = Module["_kVersionStampBuildMemprofProfileChangelistStr"] = (wasmExports["dc"].value) >>> 0;
-  _kVersionStampBuildUsernameStr = Module["_kVersionStampBuildUsernameStr"] = (wasmExports["ec"].value) >>> 0;
-  _kVersionStampBuildHostnameStr = Module["_kVersionStampBuildHostnameStr"] = (wasmExports["fc"].value) >>> 0;
-  _kVersionStampBuildDirectoryStr = Module["_kVersionStampBuildDirectoryStr"] = (wasmExports["gc"].value) >>> 0;
-  _kVersionStampBuildChangelistInt = Module["_kVersionStampBuildChangelistInt"] = (wasmExports["hc"].value) >>> 0;
-  _kVersionStampCitcSnapshotInt = Module["_kVersionStampCitcSnapshotInt"] = (wasmExports["ic"].value) >>> 0;
-  _kVersionStampBuildClientMintStatusInt = Module["_kVersionStampBuildClientMintStatusInt"] = (wasmExports["jc"].value) >>> 0;
-  _kVersionStampBuildTimestampInt = Module["_kVersionStampBuildTimestampInt"] = (wasmExports["kc"].value) >>> 0;
-  _kVersionStampVerifiableInt = Module["_kVersionStampVerifiableInt"] = (wasmExports["lc"].value) >>> 0;
-  _kVersionStampBuildCoverageEnabledInt = Module["_kVersionStampBuildCoverageEnabledInt"] = (wasmExports["mc"].value) >>> 0;
-  _kVersionStampBuildBaselineChangelistInt = Module["_kVersionStampBuildBaselineChangelistInt"] = (wasmExports["nc"].value) >>> 0;
-  _kVersionStampPrecookedTimestampStr = Module["_kVersionStampPrecookedTimestampStr"] = (wasmExports["oc"].value) >>> 0;
-  _kVersionStampPrecookedClientInfoStr = Module["_kVersionStampPrecookedClientInfoStr"] = (wasmExports["pc"].value) >>> 0;
+  dynCall_iiif = dynCalls["iiif"] = wasmExports["$d"];
+  dynCall_viji = dynCalls["viji"] = wasmExports["ae"];
+  dynCall_iiiijj = dynCalls["iiiijj"] = wasmExports["be"];
+  dynCall_viiijjj = dynCalls["viiijjj"] = wasmExports["ce"];
+  dynCall_viifii = dynCalls["viifii"] = wasmExports["de"];
+  dynCall_jjj = dynCalls["jjj"] = wasmExports["ee"];
+  dynCall_fiii = dynCalls["fiii"] = wasmExports["fe"];
+  dynCall_viiiiiiiii = dynCalls["viiiiiiiii"] = wasmExports["ge"];
+  dynCall_viiiffii = dynCalls["viiiffii"] = wasmExports["he"];
+  dynCall_iiiiiffi = dynCalls["iiiiiffi"] = wasmExports["ie"];
+  dynCall_viiiiiff = dynCalls["viiiiiff"] = wasmExports["je"];
+  dynCall_viiiiiiiiiiiii = dynCalls["viiiiiiiiiiiii"] = wasmExports["ke"];
+  dynCall_viiiiiiiiiiii = dynCalls["viiiiiiiiiiii"] = wasmExports["le"];
+  dynCall_viiiiiiiiiiiiiiiii = dynCalls["viiiiiiiiiiiiiiiii"] = wasmExports["me"];
+  dynCall_iifff = dynCalls["iifff"] = wasmExports["ne"];
+  dynCall_iiff = dynCalls["iiff"] = wasmExports["oe"];
+  dynCall_iiifiii = dynCalls["iiifiii"] = wasmExports["pe"];
+  dynCall_iiffi = dynCalls["iiffi"] = wasmExports["qe"];
+  dynCall_iiffii = dynCalls["iiffii"] = wasmExports["re"];
+  dynCall_viiiiiiiiiiiiii = dynCalls["viiiiiiiiiiiiii"] = wasmExports["se"];
+  dynCall_iif = dynCalls["iif"] = wasmExports["te"];
+  dynCall_viiiiiiiiiiiiiii = dynCalls["viiiiiiiiiiiiiii"] = wasmExports["ue"];
+  dynCall_viiifiii = dynCalls["viiifiii"] = wasmExports["ve"];
+  dynCall_fiif = dynCalls["fiif"] = wasmExports["we"];
+  dynCall_iiiifi = dynCalls["iiiifi"] = wasmExports["xe"];
+  dynCall_iiiifiii = dynCalls["iiiifiii"] = wasmExports["ye"];
+  dynCall_iiifi = dynCalls["iiifi"] = wasmExports["ze"];
+  dynCall_viiiif = dynCalls["viiiif"] = wasmExports["Ae"];
+  dynCall_viiiifii = dynCalls["viiiifii"] = wasmExports["Be"];
+  dynCall_vifi = dynCalls["vifi"] = wasmExports["Ce"];
+  dynCall_vidi = dynCalls["vidi"] = wasmExports["De"];
+  dynCall_vijjj = dynCalls["vijjj"] = wasmExports["Ee"];
+  dynCall_vj = dynCalls["vj"] = wasmExports["Fe"];
+  dynCall_iidiiiii = dynCalls["iidiiiii"] = wasmExports["Ge"];
+  dynCall_iiiiij = dynCalls["iiiiij"] = wasmExports["He"];
+  dynCall_iiiiid = dynCalls["iiiiid"] = wasmExports["Ie"];
+  dynCall_iiiiijj = dynCalls["iiiiijj"] = wasmExports["Je"];
+  dynCall_iiiiiijj = dynCalls["iiiiiijj"] = wasmExports["Ke"];
+  _asyncify_start_unwind = wasmExports["Le"];
+  _asyncify_stop_unwind = wasmExports["Me"];
+  _asyncify_start_rewind = wasmExports["Ne"];
+  _asyncify_stop_rewind = wasmExports["Oe"];
+  memory = wasmMemory = wasmExports["Eb"];
+  _kVersionStampBuildChangelistStr = Module["_kVersionStampBuildChangelistStr"] = (wasmExports["Gb"].value) >>> 0;
+  _kVersionStampCitcSnapshotStr = Module["_kVersionStampCitcSnapshotStr"] = (wasmExports["Hb"].value) >>> 0;
+  _kVersionStampCitcWorkspaceIdStr = Module["_kVersionStampCitcWorkspaceIdStr"] = (wasmExports["Ib"].value) >>> 0;
+  _kVersionStampSourceUriStr = Module["_kVersionStampSourceUriStr"] = (wasmExports["Jb"].value) >>> 0;
+  _kVersionStampBuildClientStr = Module["_kVersionStampBuildClientStr"] = (wasmExports["Kb"].value) >>> 0;
+  _kVersionStampBuildClientMintStatusStr = Module["_kVersionStampBuildClientMintStatusStr"] = (wasmExports["Lb"].value) >>> 0;
+  _kVersionStampBuildCompilerStr = Module["_kVersionStampBuildCompilerStr"] = (wasmExports["Mb"].value) >>> 0;
+  _kVersionStampBuildDateTimePstStr = Module["_kVersionStampBuildDateTimePstStr"] = (wasmExports["Nb"].value) >>> 0;
+  _kVersionStampBuildDepotPathStr = Module["_kVersionStampBuildDepotPathStr"] = (wasmExports["Ob"].value) >>> 0;
+  _kVersionStampBuildIdStr = Module["_kVersionStampBuildIdStr"] = (wasmExports["Pb"].value) >>> 0;
+  _kVersionStampBuildInfoStr = Module["_kVersionStampBuildInfoStr"] = (wasmExports["Qb"].value) >>> 0;
+  _kVersionStampBuildLabelStr = Module["_kVersionStampBuildLabelStr"] = (wasmExports["Rb"].value) >>> 0;
+  _kVersionStampBuildTargetStr = Module["_kVersionStampBuildTargetStr"] = (wasmExports["Sb"].value) >>> 0;
+  _kVersionStampBuildTimestampStr = Module["_kVersionStampBuildTimestampStr"] = (wasmExports["Tb"].value) >>> 0;
+  _kVersionStampBuildToolStr = Module["_kVersionStampBuildToolStr"] = (wasmExports["Ub"].value) >>> 0;
+  _kVersionStampG3BuildTargetStr = Module["_kVersionStampG3BuildTargetStr"] = (wasmExports["Vb"].value) >>> 0;
+  _kVersionStampVerifiableStr = Module["_kVersionStampVerifiableStr"] = (wasmExports["Wb"].value) >>> 0;
+  _kVersionStampBuildFdoTypeStr = Module["_kVersionStampBuildFdoTypeStr"] = (wasmExports["Xb"].value) >>> 0;
+  _kVersionStampBuildBaselineChangelistStr = Module["_kVersionStampBuildBaselineChangelistStr"] = (wasmExports["Yb"].value) >>> 0;
+  _kVersionStampBuildLtoTypeStr = Module["_kVersionStampBuildLtoTypeStr"] = (wasmExports["Zb"].value) >>> 0;
+  _kVersionStampBuildPropellerTypeStr = Module["_kVersionStampBuildPropellerTypeStr"] = (wasmExports["_b"].value) >>> 0;
+  _kVersionStampBuildPghoTypeStr = Module["_kVersionStampBuildPghoTypeStr"] = (wasmExports["$b"].value) >>> 0;
+  _kVersionStampBuildFdoProfileChangelistStr = Module["_kVersionStampBuildFdoProfileChangelistStr"] = (wasmExports["ac"].value) >>> 0;
+  _kVersionStampBuildMemprofProfileChangelistStr = Module["_kVersionStampBuildMemprofProfileChangelistStr"] = (wasmExports["bc"].value) >>> 0;
+  _kVersionStampBuildUsernameStr = Module["_kVersionStampBuildUsernameStr"] = (wasmExports["cc"].value) >>> 0;
+  _kVersionStampBuildHostnameStr = Module["_kVersionStampBuildHostnameStr"] = (wasmExports["dc"].value) >>> 0;
+  _kVersionStampBuildDirectoryStr = Module["_kVersionStampBuildDirectoryStr"] = (wasmExports["ec"].value) >>> 0;
+  _kVersionStampBuildChangelistInt = Module["_kVersionStampBuildChangelistInt"] = (wasmExports["fc"].value) >>> 0;
+  _kVersionStampCitcSnapshotInt = Module["_kVersionStampCitcSnapshotInt"] = (wasmExports["gc"].value) >>> 0;
+  _kVersionStampBuildClientMintStatusInt = Module["_kVersionStampBuildClientMintStatusInt"] = (wasmExports["hc"].value) >>> 0;
+  _kVersionStampBuildTimestampInt = Module["_kVersionStampBuildTimestampInt"] = (wasmExports["ic"].value) >>> 0;
+  _kVersionStampVerifiableInt = Module["_kVersionStampVerifiableInt"] = (wasmExports["jc"].value) >>> 0;
+  _kVersionStampBuildCoverageEnabledInt = Module["_kVersionStampBuildCoverageEnabledInt"] = (wasmExports["kc"].value) >>> 0;
+  _kVersionStampBuildBaselineChangelistInt = Module["_kVersionStampBuildBaselineChangelistInt"] = (wasmExports["lc"].value) >>> 0;
+  _kVersionStampPrecookedTimestampStr = Module["_kVersionStampPrecookedTimestampStr"] = (wasmExports["mc"].value) >>> 0;
+  _kVersionStampPrecookedClientInfoStr = Module["_kVersionStampPrecookedClientInfoStr"] = (wasmExports["nc"].value) >>> 0;
   __indirect_function_table = wasmExports["__indirect_function_table"];
-  _kVersionStampBuildHasHardeningProtobuf = Module["_kVersionStampBuildHasHardeningProtobuf"] = (wasmExports["Xc"].value) >>> 0;
+  _kVersionStampBuildHasHardeningProtobuf = Module["_kVersionStampBuildHasHardeningProtobuf"] = (wasmExports["Vc"].value) >>> 0;
 }
 
 var wasmImports = {
-  /** @export */ Eb: DefaultErrorReporter,
-  /** @export */ Db: GetAdapterArchitecture,
-  /** @export */ Cb: GetAdapterDescription,
-  /** @export */ Bb: GetAdapterDeviceName,
-  /** @export */ Ab: GetAdapterVendor,
-  /** @export */ zb: JsGetDeviceMaxSubgroupSize,
-  /** @export */ yb: JsGetDeviceMinSubgroupSize,
-  /** @export */ xb: ThrowError,
-  /** @export */ wb: __Unwind_RaiseException,
-  /** @export */ Fb: __asyncjs__CallStreamWeightsOnWeb,
-  /** @export */ V: __asyncjs__ReadBufferDataJs,
-  /** @export */ vb: ___syscall_dup,
-  /** @export */ ub: ___syscall_faccessat,
+  /** @export */ Db: DefaultErrorReporter,
+  /** @export */ Cb: GetAdapterArchitecture,
+  /** @export */ Bb: GetAdapterDescription,
+  /** @export */ Ab: GetAdapterDeviceName,
+  /** @export */ zb: GetAdapterVendor,
+  /** @export */ yb: JsGetDeviceMaxSubgroupSize,
+  /** @export */ xb: JsGetDeviceMinSubgroupSize,
+  /** @export */ wb: ThrowError,
+  /** @export */ vb: __Unwind_RaiseException,
+  /** @export */ U: __asyncjs__ReadBufferDataJs,
+  /** @export */ ub: ___syscall_dup,
+  /** @export */ tb: ___syscall_faccessat,
   /** @export */ w: ___syscall_fcntl64,
-  /** @export */ tb: ___syscall_fstat64,
-  /** @export */ sb: ___syscall_ftruncate64,
-  /** @export */ rb: ___syscall_getcwd,
-  /** @export */ qb: ___syscall_getdents64,
-  /** @export */ pb: ___syscall_getuid32,
-  /** @export */ ob: ___syscall_ioctl,
-  /** @export */ nb: ___syscall_lstat64,
-  /** @export */ mb: ___syscall_mkdirat,
-  /** @export */ lb: ___syscall_newfstatat,
-  /** @export */ U: ___syscall_openat,
-  /** @export */ kb: ___syscall_readlinkat,
-  /** @export */ jb: ___syscall_rmdir,
-  /** @export */ ib: ___syscall_stat64,
-  /** @export */ ia: ___syscall_unlinkat,
-  /** @export */ hb: ___syscall_utimensat,
-  /** @export */ $a: __abort_js,
+  /** @export */ sb: ___syscall_fstat64,
+  /** @export */ rb: ___syscall_ftruncate64,
+  /** @export */ qb: ___syscall_getcwd,
+  /** @export */ pb: ___syscall_getdents64,
+  /** @export */ ob: ___syscall_getuid32,
+  /** @export */ nb: ___syscall_ioctl,
+  /** @export */ mb: ___syscall_lstat64,
+  /** @export */ lb: ___syscall_mkdirat,
+  /** @export */ kb: ___syscall_newfstatat,
+  /** @export */ T: ___syscall_openat,
+  /** @export */ jb: ___syscall_readlinkat,
+  /** @export */ ib: ___syscall_rmdir,
+  /** @export */ hb: ___syscall_stat64,
+  /** @export */ ha: ___syscall_unlinkat,
+  /** @export */ gb: ___syscall_utimensat,
+  /** @export */ _a: __abort_js,
   /** @export */ B: __embind_finalize_value_object,
-  /** @export */ ga: __embind_register_bigint,
-  /** @export */ _a: __embind_register_bool,
+  /** @export */ fa: __embind_register_bigint,
+  /** @export */ Za: __embind_register_bool,
   /** @export */ n: __embind_register_class,
   /** @export */ t: __embind_register_class_class_function,
   /** @export */ D: __embind_register_class_constructor,
   /** @export */ b: __embind_register_class_function,
-  /** @export */ Za: __embind_register_emval,
-  /** @export */ T: __embind_register_enum,
-  /** @export */ q: __embind_register_enum_value,
-  /** @export */ fa: __embind_register_float,
-  /** @export */ S: __embind_register_function,
+  /** @export */ Ya: __embind_register_emval,
+  /** @export */ S: __embind_register_enum,
+  /** @export */ s: __embind_register_enum_value,
+  /** @export */ ea: __embind_register_float,
+  /** @export */ R: __embind_register_function,
   /** @export */ x: __embind_register_integer,
   /** @export */ C: __embind_register_iterable,
   /** @export */ p: __embind_register_memory_view,
   /** @export */ y: __embind_register_optional,
-  /** @export */ Ya: __embind_register_smart_ptr,
-  /** @export */ Xa: __embind_register_std_string,
-  /** @export */ R: __embind_register_std_wstring,
+  /** @export */ Xa: __embind_register_smart_ptr,
+  /** @export */ Wa: __embind_register_std_string,
+  /** @export */ Q: __embind_register_std_wstring,
   /** @export */ A: __embind_register_value_object,
   /** @export */ g: __embind_register_value_object_field,
-  /** @export */ Wa: __embind_register_void,
-  /** @export */ ea: __emval_await,
+  /** @export */ Va: __embind_register_void,
+  /** @export */ da: __emval_await,
   /** @export */ e: __emval_create_invoker,
   /** @export */ a: __emval_decref,
   /** @export */ v: __emval_get_global,
-  /** @export */ i: __emval_get_property,
+  /** @export */ h: __emval_get_property,
   /** @export */ f: __emval_incref,
-  /** @export */ J: __emval_instanceof,
+  /** @export */ G: __emval_instanceof,
   /** @export */ d: __emval_invoke,
-  /** @export */ E: __emval_is_string,
+  /** @export */ F: __emval_is_string,
   /** @export */ j: __emval_new_cstring,
   /** @export */ c: __emval_run_destructors,
-  /** @export */ Va: __emval_typeof,
+  /** @export */ ca: __emval_typeof,
   /** @export */ Ua: __gmtime_js,
   /** @export */ Ta: __localtime_js,
   /** @export */ Sa: __mktime_js,
   /** @export */ Ra: __mmap_js,
   /** @export */ Qa: __munmap_js,
   /** @export */ Pa: __tzset_js,
-  /** @export */ gb: _clock_time_get,
+  /** @export */ fb: _clock_time_get,
   /** @export */ Oa: custom_emscripten_dbgn,
-  /** @export */ da: _emscripten_asm_const_int,
-  /** @export */ Q: _emscripten_errn,
+  /** @export */ ba: _emscripten_asm_const_int,
+  /** @export */ P: _emscripten_errn,
   /** @export */ Na: _emscripten_get_heap_max,
   /** @export */ m: _emscripten_get_now,
-  /** @export */ ca: _emscripten_has_asyncify,
+  /** @export */ aa: _emscripten_has_asyncify,
   /** @export */ Ma: _emscripten_outn,
   /** @export */ La: _emscripten_pc_get_function,
   /** @export */ Ka: _emscripten_resize_heap,
-  /** @export */ ba: _emscripten_sleep,
-  /** @export */ aa: _emscripten_stack_snapshot,
+  /** @export */ $: _emscripten_sleep,
+  /** @export */ _: _emscripten_stack_snapshot,
   /** @export */ Ja: _emscripten_stack_unwind_buffer,
-  /** @export */ $: _emscripten_webgpu_get_device,
+  /** @export */ Z: _emscripten_webgpu_get_device,
   /** @export */ Ia: _emwgpuBufferDestroy,
   /** @export */ Ha: _emwgpuBufferGetConstMappedRange,
   /** @export */ Ga: _emwgpuBufferGetMappedRange,
@@ -8580,49 +8541,48 @@ var wasmImports = {
   /** @export */ za: _emwgpuDeviceDestroy,
   /** @export */ ya: _emwgpuQueueOnSubmittedWorkDone,
   /** @export */ xa: _emwgpuWaitAny,
-  /** @export */ fb: _environ_get,
-  /** @export */ eb: _environ_sizes_get,
-  /** @export */ _: _exit,
-  /** @export */ F: _fd_close,
-  /** @export */ db: _fd_pread,
-  /** @export */ ha: _fd_read,
-  /** @export */ cb: _fd_seek,
-  /** @export */ K: _fd_write,
-  /** @export */ bb: _proc_exit,
-  /** @export */ ab: _random_get,
-  /** @export */ P: _wgpuBufferGetSize,
-  /** @export */ wa: _wgpuBufferGetUsage,
-  /** @export */ s: _wgpuCommandEncoderBeginComputePass,
+  /** @export */ eb: _environ_get,
+  /** @export */ db: _environ_sizes_get,
+  /** @export */ wa: _exit,
+  /** @export */ H: _fd_close,
+  /** @export */ cb: _fd_pread,
+  /** @export */ ga: _fd_read,
+  /** @export */ bb: _fd_seek,
+  /** @export */ L: _fd_write,
+  /** @export */ ab: _proc_exit,
+  /** @export */ $a: _random_get,
+  /** @export */ K: _wgpuBufferGetSize,
+  /** @export */ va: _wgpuBufferGetUsage,
+  /** @export */ r: _wgpuCommandEncoderBeginComputePass,
   /** @export */ O: _wgpuCommandEncoderClearBuffer,
   /** @export */ z: _wgpuCommandEncoderCopyBufferToBuffer,
-  /** @export */ va: _wgpuCommandEncoderCopyBufferToTexture,
-  /** @export */ ua: _wgpuCommandEncoderCopyTextureToBuffer,
-  /** @export */ ta: _wgpuCommandEncoderCopyTextureToTexture,
+  /** @export */ ua: _wgpuCommandEncoderCopyBufferToTexture,
+  /** @export */ ta: _wgpuCommandEncoderCopyTextureToBuffer,
+  /** @export */ sa: _wgpuCommandEncoderCopyTextureToTexture,
   /** @export */ l: _wgpuCommandEncoderFinish,
-  /** @export */ sa: _wgpuCommandEncoderResolveQuerySet,
+  /** @export */ Y: _wgpuCommandEncoderResolveQuerySet,
   /** @export */ u: _wgpuComputePassEncoderDispatchWorkgroups,
-  /** @export */ r: _wgpuComputePassEncoderEnd,
-  /** @export */ Z: _wgpuComputePassEncoderSetBindGroup,
+  /** @export */ q: _wgpuComputePassEncoderEnd,
+  /** @export */ ra: _wgpuComputePassEncoderSetBindGroup,
   /** @export */ N: _wgpuComputePassEncoderSetPipeline,
-  /** @export */ ra: _wgpuComputePipelineGetBindGroupLayout,
-  /** @export */ Y: _wgpuDeviceCreateBindGroup,
-  /** @export */ qa: _wgpuDeviceCreateBindGroupLayout,
+  /** @export */ qa: _wgpuDeviceCreateBindGroup,
+  /** @export */ pa: _wgpuDeviceCreateBindGroupLayout,
   /** @export */ k: _wgpuDeviceCreateCommandEncoder,
-  /** @export */ M: _wgpuDeviceCreateComputePipeline,
-  /** @export */ pa: _wgpuDeviceCreatePipelineLayout,
-  /** @export */ oa: _wgpuDeviceCreateQuerySet,
-  /** @export */ na: _wgpuDeviceCreateTexture,
-  /** @export */ I: _wgpuDeviceGetAdapterInfo,
-  /** @export */ ma: _wgpuDeviceGetLimits,
-  /** @export */ L: _wgpuDeviceHasFeature,
-  /** @export */ h: _wgpuQueueSubmit,
-  /** @export */ H: _wgpuQueueWriteBuffer,
-  /** @export */ la: _wgpuQueueWriteTexture,
-  /** @export */ ka: _wgpuTextureCreateView,
-  /** @export */ ja: _wgpuTextureDestroy,
-  /** @export */ X: _wgpuTextureGetDepthOrArrayLayers,
-  /** @export */ G: _wgpuTextureGetHeight,
-  /** @export */ W: _wgpuTextureGetWidth
+  /** @export */ oa: _wgpuDeviceCreateComputePipeline,
+  /** @export */ na: _wgpuDeviceCreatePipelineLayout,
+  /** @export */ X: _wgpuDeviceCreateQuerySet,
+  /** @export */ ma: _wgpuDeviceCreateTexture,
+  /** @export */ J: _wgpuDeviceGetAdapterInfo,
+  /** @export */ la: _wgpuDeviceGetLimits,
+  /** @export */ M: _wgpuDeviceHasFeature,
+  /** @export */ i: _wgpuQueueSubmit,
+  /** @export */ E: _wgpuQueueWriteBuffer,
+  /** @export */ ka: _wgpuQueueWriteTexture,
+  /** @export */ ja: _wgpuTextureCreateView,
+  /** @export */ ia: _wgpuTextureDestroy,
+  /** @export */ W: _wgpuTextureGetDepthOrArrayLayers,
+  /** @export */ I: _wgpuTextureGetHeight,
+  /** @export */ V: _wgpuTextureGetWidth
 };
 
 // Argument name here must shadow the `wasmExports` global so
@@ -8634,13 +8594,13 @@ function applySignatureConversions(wasmExports) {
   var makeWrapper_pp = f => a0 => f(a0) >>> 0;
   var makeWrapper_ppp = f => (a0, a1) => f(a0, a1) >>> 0;
   var makeWrapper_p = f => () => f() >>> 0;
-  wasmExports["qc"] = makeWrapper_pp(wasmExports["qc"]);
+  wasmExports["oc"] = makeWrapper_pp(wasmExports["oc"]);
   wasmExports["realloc"] = makeWrapper_ppp(wasmExports["realloc"]);
-  wasmExports["Yc"] = makeWrapper_pp(wasmExports["Yc"]);
-  wasmExports["Zc"] = makeWrapper_ppp(wasmExports["Zc"]);
-  wasmExports["_c"] = makeWrapper_ppp(wasmExports["_c"]);
-  wasmExports["ad"] = makeWrapper_pp(wasmExports["ad"]);
-  wasmExports["bd"] = makeWrapper_p(wasmExports["bd"]);
+  wasmExports["Wc"] = makeWrapper_pp(wasmExports["Wc"]);
+  wasmExports["Xc"] = makeWrapper_ppp(wasmExports["Xc"]);
+  wasmExports["Yc"] = makeWrapper_ppp(wasmExports["Yc"]);
+  wasmExports["_c"] = makeWrapper_pp(wasmExports["_c"]);
+  wasmExports["$c"] = makeWrapper_p(wasmExports["$c"]);
   return wasmExports;
 }
 
