@@ -17,22 +17,32 @@ export const LANGUAGES: Language[] = [
 
 export const OFFLINE_MODELS = [
     { 
-        name: 'Gemma-4-E2B-it (2.5 GB)', 
+        name: 'Gemma-4-E2B-it-TextOnly (1.9 GB)', 
+        value: 'gemma-4-E2B-it-gpu.litertlm', 
+        url: 'https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it-gpu.litertlm'
+    },
+    { 
+        name: 'Gemma-4-E4B-it-TextOnly (3.3 GB)', 
+        value: 'gemma-4-E4B-it-gpu.litertlm', 
+        url: 'https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it-gpu.litertlm'
+    },
+    { 
+        name: 'Gemma-4-E2B-it(2.5 GB)', 
         value: 'gemma-4-E2B-it.litertlm', 
         url: 'https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm'
     },
     { 
-        name: 'Gemma-4-E4B-it (3.6 GB)', 
+        name: 'Gemma-4-E4B-it(3.6 GB)', 
         value: 'gemma-4-E4B-it.litertlm', 
         url: 'https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it.litertlm'
     },
     { 
-        name: 'Gemma-3n-E2B (3.04 GB)', 
+        name: 'Gemma-3n-E2B(3.04 GB)', 
         value: 'gemma-3n-E2B-it-int4-Web.litertlm', 
         url: 'https://huggingface.co/willopcbeta/Gemma-3n-Web/resolve/main/gemma-3n-E2B-it-int4-Web.litertlm'
     },
     { 
-        name: 'Gemma-3n-E4B (4.28 GB)', 
+        name: 'Gemma-3n-E4B(4.28 GB)', 
         value: 'gemma-3n-E4B-it-int4-Web.litertlm', 
         url: 'https://huggingface.co/willopcbeta/Gemma-3n-Web/resolve/main/gemma-3n-E4B-it-int4-Web.litertlm'
     },

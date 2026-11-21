@@ -674,8 +674,8 @@ class Qwen3AsrEngine {
             this.embF32 = emb.dtype === 'float32' ? new Float32Array(embBuf) : null;
 
             // Setup ONNX Runtime Web
-            ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/';
-            ort.env.wasm.numThreads = 1;
+            ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.1/dist/';
+            ort.env.wasm.numThreads = 0;
             ort.env.webgpu.powerPreference = 'high-performance';
             ort.env.debug = false;
             ort.env.logLevel = 'fatal';
